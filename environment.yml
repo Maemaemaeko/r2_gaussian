@@ -1,10 +1,12 @@
-name: r2_gaussian
+name: r2_gaussian_v2
 channels:
+  - nvidia
   - pytorch
   - conda-forge
   - defaults
 dependencies:
   - cudatoolkit=11.6
+  - cudatoolkit-dev=11.6
   - plyfile
   - python=3.9
   - pip=22.3.1
@@ -27,5 +29,3 @@ dependencies:
     - scikit-image
     - Cython==0.29.36
     - open3d==0.18.0
-    - -e r2_gaussian/submodules/simple-knn
-    - -e r2_gaussian/submodules/xray-gaussian-rasterization-voxelization
