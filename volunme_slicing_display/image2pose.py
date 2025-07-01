@@ -4,11 +4,9 @@ from cv2 import aruco
 from pathlib import Path
 from PIL import Image
 
-
-
-class Movie2Pose:
-    def __init__(self, path):
-        self.path = path
+class Image2Pose:
+    def __init__(self, calibration_path):
+        self.calibration_path = calibration_path
         #self.cameraMatrix, self.distCoeffs = read_intrinsics(self.path)
         self.square_length = 0.04
         self.marker_length = 0.03
@@ -20,7 +18,7 @@ class Movie2Pose:
 
     def read_intrinsics(self):
         """Read camera intrinsics from a file."""
-        calibration_data = np.load(self.path / "calibration.npz")
+        calibration_data = np.load(self.calibration_path / "calibration.npz")
         self.cameraMatrix = calibration_data['camera_matrix']
         print("Camera Matrix:\n", self.cameraMatrix)
         self.distCoeffs = calibration_data['dist_coeffs']
@@ -97,6 +95,8 @@ class Movie2Pose:
         print("Charuco Center in Camera Coordinates:\n", charuco_center)
 
         return charuco_center
+
+
     
 if __name__ == "__main__":
     import argparse
@@ -108,14 +108,14 @@ if __name__ == "__main__":
     # movie2pose.read_intrinsics()
     # movie2pose.detect_markers()
     # Example usage
-    movie2pose = Movie2Pose(Path("C:\\Users\\Maemaeko\\imari_lab\\r2_gaussian\\volunme_slicing_display\\camera_calibration"))
+    image2pose = Image2Pose(Path("C:\\Users\\Maemaeko\\imari_lab\\r2_gaussian\\volunme_slicing_display\\camera_calibration"))
     image_path = Path(r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\images\capture_20250617_175949.png")
-    movie2pose.read_intrinsics()
-    marker_corners, marker_ids = movie2pose.detect_markers(image_path, rotation_angle=cv2.ROTATE_180)
-    #marker_corners, marker_ids = movie2pose.detect_markers(image_path, rotation_angle=cv2.ROTATE_90_CLOCKWISE)
-    rvec, tvec = movie2pose.detect_charuco(image_path, marker_corners, marker_ids)
-    charuco_tf, _ = movie2pose.output_transform(rvec, tvec)
-    charuco_center = movie2pose.output_charuco_center(rvec, tvec)
+    image2pose.read_intrinsics()
+    marker_corners, marker_ids = image2pose.detect_markers(image_path, rotation_angle=cv2.ROTATE_180)
+    #marker_corners, marker_ids = image2pose.detect_markers(image_path, rotation_angle=cv2.ROTATE_90_CLOCKWISE)
+    rvec, tvec = image2pose.detect_charuco(image_path, marker_corners, marker_ids)
+    charuco_tf, _ = image2pose.output_transform(rvec, tvec)
+    charuco_center = image2pose.output_charuco_center(rvec, tvec)
     print("ChArUco Transformation Matrix:\n", charuco_tf)
     # save the transformation matrices to a file
-    np.savez("charuco_camera_transformation.npz", charuco_tf=charuco_tf, charuco_center_camera=charuco_center_camera)
+    np.savez("charuco_camera_transformation.npz", charuco_tf=charuco_tf, charuco_center=charuco_center)

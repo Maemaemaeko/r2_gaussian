@@ -5,14 +5,23 @@ import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import os 
+import os.path as osp
 import copy
+import open3d as o3d
+import yaml
+from pathlib import Path
+
 
 sys.path.append("./")
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
 from r2_gaussian.gaussian.gaussian_model import GaussianModel
 from r2_gaussian.dataset.cameras import Camera
 from r2_gaussian.arguments import PipelineParams
 from r2_gaussian.dataset import Scene
+from r2_gaussian.utils.plot_utils import create_textured_camera, create_vol_mesh
 from r2_gaussian.gaussian import GaussianModel, render, query, initialize_gaussian
+from r2_gaussian.utils.graphics_utils import fov2focal
 
 from argparse import ArgumentParser, Namespace
 
@@ -28,7 +37,7 @@ from pathlib import Path
 
 
 class R2GaussianSceneRenderer:
-    def __init__(self, source_path: str = "data/synthetic_dataset/cone_ntrain_75_angle_360/0_chest_cone", model_path: str = "output/95e359ad-b", data_device: str = "cuda"):
+    def __init__(self, source_path: str = "..data/synthetic_dataset/cone_ntrain_75_angle_360/0_chest_cone", model_path: str = "output/95e359ad-b", data_device: str = "cuda"):
         parser = ArgumentParser(description="Read Gaussian model from file")
         model = ModelParams(parser, sentinel=True)
         self.pipeline = PipelineParams(parser)
@@ -43,15 +52,17 @@ class R2GaussianSceneRenderer:
         )
 
         dataset = model.extract(args)
-
+        self.source_path = source_path
         self.gaussians = GaussianModel(None)
         loaded_iter = initialize_gaussian(self.gaussians, dataset, -1)
 
-        
-    def get_eye_view(self, charuco_tf, charuco_center, eye_position: str = "top"):
+        #self.scene = Scene(dataset, shuffle=False)
+
+
+    def get_eye_view(self, charuco_tf, charuco_center, eye_position: str = "top", height=4):
         if eye_position == "top":
             _r = np.array([[0, 1, 0], [1, 0, 0], [0, 0, -1]])  # 上からの視点
-            _t = np.array([0, 0, 3])
+            _t = np.array([0, 0, height])
 
         elif eye_position == "lookatobject":
             origin = charuco_tf[:3, 3]
@@ -62,10 +73,20 @@ class R2GaussianSceneRenderer:
         
             x_axis = project_onto_plane(charuco_tf[:3, 0], normal_vector)
             y_axis = project_onto_plane(charuco_tf[:3, 1], normal_vector)
-            z_axis = normal_vector
+            z_axis = normal_vector / np.linalg.norm(normal_vector)
             _r = np.array([y_axis, x_axis, -z_axis]).T
-            _t = origin + z_axis * 4
+            _t = origin + z_axis * height
+            print("Look at object position:", _t)
 
+        elif eye_position == "board":
+            origin = charuco_tf[:3, 3]
+            x_axis = charuco_tf[:3, 0]
+            y_axis = charuco_tf[:3, 1]
+            z_axis = charuco_tf[:3, 2]
+            # z_axisの大きさを正規化
+            z_axis = z_axis / np.linalg.norm(z_axis)
+            _r = np.array([y_axis, x_axis, -z_axis]).T
+            _t = origin + z_axis * height
 
         return Camera(
             colmap_id = 65,
@@ -189,20 +210,121 @@ class R2GaussianSceneRenderer:
 
         return rendering, rendering_cut
 
+    def visualize(self, charuco_tf, charuco_center, scanner_cfg="../data_generator/synthetic_dataset/scanner/cone_beam.yml", eye_position="top", rendering=None):
+
+
+            camera = self.get_eye_view(charuco_tf, charuco_center, eye_position)
+            # w2cをRとTから計算
+            w2c = np.eye(4)
+            w2c[:3, :3] = camera.R.T
+            w2c[:3, 3] = camera.T
+            
+
+            with open(scanner_cfg, "r") as handle:
+                scanner_cfg = yaml.safe_load(handle)
+
+            vol_mesh = create_vol_mesh(
+                np.load(osp.join(self.source_path, "vol_gt.npy")),
+                np.array(scanner_cfg["offOrigin"]),
+                np.array(scanner_cfg["sVoxel"]) / np.array(scanner_cfg["nVoxel"]),
+                np.eye(3),
+                level = 0.5
+            )
+
+
+            vol_coord = o3d.geometry.TriangleMesh.create_coordinate_frame(
+                size = scanner_cfg["sVoxel"][0] / 2,
+                origin = scanner_cfg["offOrigin"],
+            )
+
+            vol_bbox = o3d.geometry.OrientedBoundingBox(
+                center = scanner_cfg["offOrigin"],
+                R = np.eye(3),
+                extent = scanner_cfg["sVoxel"],
+            )
+
+            vol_bbox.color = np.array([1, 0, 0])
+
+            unit_bbox = o3d.geometry.OrientedBoundingBox(
+                center = [0, 0, 0], R = np.eye(3), extent = [2, 2, 2]
+            )
+
+            unit_bbox.color = np.array([0, 0, 1])
+
+            FoVx = camera.FoVx
+            FoVy = camera.FoVy
+            W = 512
+            H = 512
+
+            K = np.array(
+                [
+                    [fov2focal(FoVx, W), 0, W / 2],
+                    [0, fov2focal(FoVy, H), H / 2],
+                    [0, 0, 1],
+                ]
+            )
+            cam = create_textured_camera(
+                K,
+                w2c,
+                2,  # cam_scale
+                np.array([0.5, 0.5, 0.5]),  # color
+                W,
+                H,
+                "eye_camera",  # image_name
+                rendering
+            )
+           
+            # charucoボードを可視化
+            charuco_size = (2, 2)
+            w, h = charuco_size
+            half_w, half_h = w / 2, h / 2
+            local_corners = np.array([
+                [-half_w, -half_h, 0],
+                [half_w, -half_h, 0],
+                [half_w, half_h, 0],
+                [-half_w, half_h, 0]
+            ])
+
+            local_corners_h = np.hstack([local_corners, np.ones((4, 1))])  # → (4, 4)
+            world_corners = (charuco_tf @ local_corners_h.T).T[:, :3]     # → (4, 3)
+
+
+            lines = [
+              [0, 1], [1, 2], [2, 3], [3, 0],  # 外周
+                [0, 2], [1, 3]  # 対角線
+            ]
+            colors = [[0, 0, 1] for _ in range(len(lines))]  # 青色
+            # Step 1: 空のLineSetを作る
+            line_box = o3d.geometry.LineSet()
+
+            # Step 2: プロパティを個別に代入する（キーワード引数ではなく）
+            line_box.points = o3d.utility.Vector3dVector(world_corners)
+            line_box.lines = o3d.utility.Vector2iVector(lines)
+            line_box.colors = o3d.utility.Vector3dVector(colors)
+
+            vis_assets = [vol_mesh, vol_coord, vol_bbox, unit_bbox] + cam + [line_box]
+
+            o3d.visualization.draw_geometries(vis_assets, mesh_show_back_face=True)
+
+
+            return None
+
 
 if __name__ == "__main__":
     # Example usage
     renderer = R2GaussianSceneRenderer(
-        source_path="data/synthetic_dataset/cone_ntrain_75_angle_360/0_chest_cone",
-        model_path="output/95e359ad-b",
+        source_path="../data/synthetic_dataset/cone_ntrain_75_angle_360/0_chest_cone",
+        model_path="../output/95e359ad-b",
         data_device="cuda"
     )
-    charuco_path =  "volunme_slicing_display/charuco_camera_transformation.npz"
+    charuco_path =  "charuco_camera_transformation.npz"
     charuco_tf = np.load(charuco_path)["charuco_tf"]
     charuco_center = np.array([-0.00781352, -0.01640093, 0.4141831])
     #renderer.plot_board_transform(charuco_tf, charuco_center, colors=('r', 'g', 'b'), eye_position="lookatobject")
-    eye_position = "lookatobject"  # or "top", "lookatobject"
-    cut_method = "beyond_plane"  # or "by_plane"
+    eye_position = "board"  # or "top", "lookatobject", "board"
+    cut_method = "by_plane"  # or "by_plane"
     d = 0.1
 
     rendering, rendering_cut = renderer.render_gaussians(charuco_tf, charuco_center, d, eye_position, cut_method)
+
+    renderer.visualize(charuco_tf, charuco_center, rendering=rendering_cut, eye_position=eye_position)
