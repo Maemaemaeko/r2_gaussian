@@ -8,8 +8,8 @@ class Image2Pose:
     def __init__(self, calibration_path):
         self.calibration_path = calibration_path
         #self.cameraMatrix, self.distCoeffs = read_intrinsics(self.path)
-        self.square_length = 0.04
-        self.marker_length = 0.03
+        self.square_length = 0.08 # 0.04
+        self.marker_length = 0.06 # 0.03
         self.dictionary = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
         self.board = aruco.CharucoBoard((7, 5), self.square_length, self.marker_length, self.dictionary)
         self.cameraMatrix = None
@@ -70,6 +70,7 @@ class Image2Pose:
 
 
         print("Translation Vector:\n", tvec)
+        tvec -= np.array([[0], [0], [0.5]])
 
         return rvec, tvec
     

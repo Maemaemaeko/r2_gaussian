@@ -27,6 +27,7 @@ def main(image_folder, rendering_folder=None, visualization_folder=None, concat_
 
 
     # 保存先のフォルダを作成
+
     if rendering_folder and not os.path.exists(rendering_folder):
         os.makedirs(rendering_folder)
         print(f"Created rendering folder: {rendering_folder}")
@@ -42,6 +43,8 @@ def main(image_folder, rendering_folder=None, visualization_folder=None, concat_
     for image_file in image_files:
         image_path = os.path.join(image_folder, image_file)
         marker_corners, marker_ids = image2pose.detect_markers(image_path)
+
+
         rvec, tvec = image2pose.detect_charuco(image_path, marker_corners, marker_ids)
         charuco_tf, _ = image2pose.output_transform(rvec, tvec)
         charuco_center = image2pose.output_charuco_center(rvec, tvec)
@@ -82,6 +85,7 @@ def main(image_folder, rendering_folder=None, visualization_folder=None, concat_
         create_gif_from_images(image_folder, os.path.join(image_folder, "output.gif"))
         create_gif_from_images(rendering_folder, os.path.join(rendering_folder, "output.gif"))
         create_gif_from_images(visualization_folder, os.path.join(visualization_folder, "output.gif"))
+        create_gif_from_images(concat_folder, os.path.join(concat_folder, "output.gif"))
 
 
 
@@ -129,12 +133,13 @@ def create_mov_from_images(image_folder, output_path):
 
 
 if __name__ == "__main__":
-    image_folder = r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\images"
+    image_folder = r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\test_images"
     rendering_folder = r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\rendering"
     visualization_folder = r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\visualization"
     concat_folder = r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\concat_images"
 
-    main(image_folder, rendering_folder=rendering_folder,
-         visualization_folder=visualization_folder,
-         concat_folder=concat_folder,
-         create_gif=True)
+    # main(image_folder, rendering_folder=rendering_folder,
+    #      visualization_folder=visualization_folder,
+    #      concat_folder=concat_folder,
+    #      create_gif=True)
+    create_gif_from_images(concat_folder, os.path.join(concat_folder, "output.gif"))
