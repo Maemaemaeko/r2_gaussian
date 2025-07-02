@@ -180,7 +180,7 @@ class R2GaussianSceneRenderer:
             mask  = distance < 0
             gaussians._density[mask] = -100
 
-    def render_gaussians(self, charuco_tf, charuco_center, d=0.1, eye_position: str = "top", cut_method: str="by_plane"):
+    def render_gaussians(self, charuco_tf, charuco_center, d=0.1, eye_position: str = "top", cut_method: str="by_plane", interactive=False):
         view = self.get_eye_view(charuco_tf, charuco_center, eye_position)
         with torch.no_grad():
             cut_gaussians = copy.deepcopy(self.gaussians)
@@ -192,27 +192,26 @@ class R2GaussianSceneRenderer:
             rendering = render(view, self.gaussians, self.pipeline)["render"][0].detach().cpu().numpy()
             rendering_cut = render(view, cut_gaussians, self.pipeline)["render"][0].detach().cpu().numpy()
 
-            print("Rendering shape:", rendering.shape)
-            print("Cut Rendering shape:", rendering_cut.shape)
+            if interactive:
+                print("Rendering shape:", rendering.shape)
+                print("Cut Rendering shape:", rendering_cut.shape)
 
-            # 画像を表示
-            plt.figure(figsize=(10, 5))
-            plt.subplot(1, 2, 1)
-            plt.imshow(rendering)
-            plt.title("Original Rendering")
-            plt.axis('off')
+                # 画像を表示
+                plt.figure(figsize=(10, 5))
+                plt.subplot(1, 2, 1)
+                plt.imshow(rendering)
+                plt.title("Original Rendering")
+                plt.axis('off')
 
-            plt.subplot(1, 2, 2)
-            plt.imshow(rendering_cut)
-            plt.title(f"Rendering with {cut_method} (d={d})")
-            plt.axis('off')
-            plt.show()
+                plt.subplot(1, 2, 2)
+                plt.imshow(rendering_cut)
+                plt.title(f"Rendering with {cut_method} (d={d})")
+                plt.axis('off')
+                plt.show()
 
         return rendering, rendering_cut
 
-    def visualize(self, charuco_tf, charuco_center, scanner_cfg="../data_generator/synthetic_dataset/scanner/cone_beam.yml", eye_position="top", rendering=None):
-
-
+    def visualize(self, charuco_tf, charuco_center, scanner_cfg="../data_generator/synthetic_dataset/scanner/cone_beam.yml", eye_position="top", rendering=None, interactive=False):
             camera = self.get_eye_view(charuco_tf, charuco_center, eye_position)
             # w2cをRとTから計算
             w2c = np.eye(4)
@@ -228,7 +227,7 @@ class R2GaussianSceneRenderer:
                 np.array(scanner_cfg["offOrigin"]),
                 np.array(scanner_cfg["sVoxel"]) / np.array(scanner_cfg["nVoxel"]),
                 np.eye(3),
-                level = 0.5
+                level = 0.4
             )
 
 
@@ -243,13 +242,7 @@ class R2GaussianSceneRenderer:
                 extent = scanner_cfg["sVoxel"],
             )
 
-            vol_bbox.color = np.array([1, 0, 0])
-
-            unit_bbox = o3d.geometry.OrientedBoundingBox(
-                center = [0, 0, 0], R = np.eye(3), extent = [2, 2, 2]
-            )
-
-            unit_bbox.color = np.array([0, 0, 1])
+            vol_bbox.color = np.array([1, 0, 0]) # 赤色
 
             FoVx = camera.FoVx
             FoVy = camera.FoVy
@@ -302,12 +295,103 @@ class R2GaussianSceneRenderer:
             line_box.lines = o3d.utility.Vector2iVector(lines)
             line_box.colors = o3d.utility.Vector3dVector(colors)
 
-            vis_assets = [vol_mesh, vol_coord, vol_bbox, unit_bbox] + cam + [line_box]
+            vis_assets = [vol_mesh, vol_coord, vol_bbox] + cam + [line_box]
 
-            o3d.visualization.draw_geometries(vis_assets, mesh_show_back_face=True)
+            image = None
+            if interactive:
+                o3d.visualization.draw_geometries(vis_assets, mesh_show_back_face=True)
+                # For debugging
+                #self.save_camera_extrinsic(vis_assets)
+                #self.test_pose_change(vis_assets)
 
+            else:
+                vis = o3d.visualization.Visualizer()
+                vis.create_window(visible=False, width=512, height=512)
+                for asset in vis_assets:
+                    vis.add_geometry(asset)
+                vis.get_render_option().mesh_show_back_face = True
 
-            return None
+                vis.poll_events()
+                vis.update_renderer()
+
+                ctr = vis.get_view_control()
+                ctr.set_lookat([0.0, 0.0, 0.5])   # 注視点
+                ctr.set_front ([-1, 0.0, 0.0])  # カメラから見た前方向ベクトル
+                ctr.set_up    ([0.0, 0.0, 1.0])  # カメラの上向きベクトル
+                ctr.set_zoom  (0.8)          # ズーム倍率（1.0 で等倍）
+
+       
+                vis.poll_events()
+                vis.update_renderer()
+
+                image = vis.capture_screen_float_buffer(do_render=True)
+                vis.destroy_window()
+
+                # np.asarray(image) を可視化
+                image = np.asarray(image)
+                # opencvで画像を表示
+                # image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+                # cv2.imshow("Rendered Image", image)
+                # cv2.waitKey(0)
+               
+            return image
+
+    def save_camera_extrinsic(self, vis_assets, save_path="camera.json"):
+        vis = o3d.visualization.Visualizer()
+        vis.create_window()
+        for asset in vis_assets:
+            vis.add_geometry(asset)
+
+        # GUIを表示して視点をユーザーが調整
+        vis.run()
+
+        # カメラパラメータを取得
+        ctr = vis.get_view_control()
+        cam_param = ctr.convert_to_pinhole_camera_parameters()
+
+        # extrinsic を表示・保存
+        extrinsic = cam_param.extrinsic
+        print("Extrinsic matrix (world to camera):\n", extrinsic)
+
+        # JSON保存（必要であれば）
+        o3d.io.write_pinhole_camera_parameters(save_path, cam_param)
+        print(f"Camera parameters saved to: {save_path}")
+
+        vis.destroy_window()
+
+    def test_pose_change(self, vis_assets):
+        vis = o3d.visualization.Visualizer()
+        vis.create_window(visible=True, width=1920, height=1080)
+        for asset in vis_assets:
+            vis.add_geometry(asset)
+
+        # 背面ポリゴンも表示
+        vis.get_render_option().mesh_show_back_face = True
+
+        # 一度イベントループを回して内部状態を整える
+        vis.poll_events()
+        vis.update_renderer()
+
+        # ——— カメラパラメータ取得 & 置き換え ———rol()
+        ctr = vis.get_view_control()
+        ctr.set_lookat([0.0, 0.0, 0.0])   # 注視点
+        ctr.set_front ([-1, 0.0, 0.0])  # カメラから見た前方向ベクトル
+        ctr.set_up    ([0.0, 0.0, 1.0])  # カメラの上向きベクトル
+        ctr.set_zoom  (0.7)               # ズーム倍率（1.0 で等倍）
+        # 4) 再レンダリング → キャプチャ
+        vis.poll_events()
+        vis.update_renderer()
+
+        # ——— キャプチャ & Window 終了 ———
+        image = vis.capture_screen_float_buffer(do_render=True)
+        vis.destroy_window()
+
+        # NumPy 配列化 → BGR に変換 → OpenCV で表示
+        image = np.asarray(image)
+        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        cv2.imshow("Rendered Image", image)
+        cv2.waitKey(0)
+
 
 
 if __name__ == "__main__":
@@ -327,4 +411,4 @@ if __name__ == "__main__":
 
     rendering, rendering_cut = renderer.render_gaussians(charuco_tf, charuco_center, d, eye_position, cut_method)
 
-    renderer.visualize(charuco_tf, charuco_center, rendering=rendering_cut, eye_position=eye_position)
+    renderer.visualize(charuco_tf, charuco_center, rendering=rendering_cut, eye_position=eye_position, interactive=False)
