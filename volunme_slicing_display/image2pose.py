@@ -24,9 +24,9 @@ class Image2Pose:
         self.distCoeffs = calibration_data['dist_coeffs']
         print("Distortion Coefficients:\n", self.distCoeffs)
 
-    def detect_markers(self , image_path, rotation_angle=0):
+    def detect_markers(self , image, rotation_angle=0):
         """Detect markers in the image and return their poses."""
-        image = cv2.imread(str(image_path))
+        #image = cv2.imread(str(image_path))
         if rotation_angle != 0:
             # Rotate the image if a rotation angle is specified
             image = cv2.rotate(image, rotation_angle)
@@ -47,11 +47,9 @@ class Image2Pose:
 
         return marker_corners, marker_ids
     
-    def detect_charuco(self, image_path, marker_corners=None, marker_ids=None):
+    def detect_charuco(self, image, marker_corners=None, marker_ids=None):
         """Detect ChArUco markers in the image and return their poses."""
-        image = cv2.imread(str(image_path))
-        if image is None:
-            raise ValueError(f"Image at {image_path} could not be read.")
+        #image = cv2.imread(str(image_path))
         
         detector_params = aruco.CharucoParameters()
         detector_params.cameraMatrix = self.cameraMatrix
@@ -60,6 +58,8 @@ class Image2Pose:
         charuco_detector = aruco.CharucoDetector(self.board, detector_params)
         charuco_corners, charuco_ids = None, None
         charuco_corners, charuco_ids,  charuco_marker_corners, charuco_marker_ids = charuco_detector.detectBoard(image, charuco_corners, charuco_ids, marker_corners, marker_ids)
+        if charuco_corners is None or charuco_ids is None or len(charuco_ids) < 6:
+            return None, None
 
         imcharuco = aruco.drawDetectedCornersCharuco(image.copy(), charuco_corners, charuco_ids)
 
@@ -71,12 +71,21 @@ class Image2Pose:
 
         print("Translation Vector:\n", tvec)
         tvec -= np.array([[0], [0], [0.5]])
+        print(rvec)
+        # rvecを90度回転
+        rvec = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]]) @ rvec
+        # rvecを-90度回転
+        #rvec = np.array([[0, 1, 0], [-1, 0, 0], [0, 0, 1]]) @ rvec
+        
+        
 
         return rvec, tvec
     
 
     def output_transform(self, rvec, tvec):
         """Convert rotation vector and translation vector to a transformation matrix."""
+        if rvec is None or tvec is None:
+            return None, None
         rotation_matrix, _ = cv2.Rodrigues(rvec)
         charuco_tf = np.concatenate((np.concatenate((rotation_matrix, tvec), axis=1), np.array([[0, 0, 0, 1]])))
 
@@ -86,6 +95,8 @@ class Image2Pose:
         return charuco_tf, camera_tf
     
     def output_charuco_center(self, rvec, tvec):
+        if rvec is None or tvec is None:
+            return None
         # 回転ベクトルから回転行列に変換
         rotation_matrix, _ = cv2.Rodrigues(rvec)
         # ボードの中心

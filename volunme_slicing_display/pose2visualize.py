@@ -191,6 +191,10 @@ class R2GaussianSceneRenderer:
 
             rendering = render(view, self.gaussians, self.pipeline)["render"][0].detach().cpu().numpy()
             rendering_cut = render(view, cut_gaussians, self.pipeline)["render"][0].detach().cpu().numpy()
+            #　左右反転
+            rendering_cut = rendering_cut[:, ::-1]
+            #　上下反転
+            rendering_cut = rendering_cut[::-1, :]
 
             if interactive:
                 print("Rendering shape:", rendering.shape)
@@ -227,7 +231,7 @@ class R2GaussianSceneRenderer:
                 np.array(scanner_cfg["offOrigin"]),
                 np.array(scanner_cfg["sVoxel"]) / np.array(scanner_cfg["nVoxel"]),
                 np.eye(3),
-                level = 0.4
+                level = 0.5
             )
 
 
@@ -333,7 +337,7 @@ class R2GaussianSceneRenderer:
                 # image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
                 # cv2.imshow("Rendered Image", image)
                 # cv2.waitKey(0)
-               
+
             return image
 
     def save_camera_extrinsic(self, vis_assets, save_path="camera.json"):
