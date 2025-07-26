@@ -67,15 +67,16 @@ class R2GaussianSceneRenderer:
 
         elif eye_position == "lookatobject":
             origin = charuco_tf[:3, 3]
-            normal_vector = charuco_center#.ravel()
+            normal_vector = charuco_center.ravel()
             def project_onto_plane(vec, normal):
                 normal = normal / np.linalg.norm(normal)
                 return vec - np.dot(vec, normal) * normal
-        
+
             x_axis = project_onto_plane(charuco_tf[:3, 0], normal_vector)
             y_axis = project_onto_plane(charuco_tf[:3, 1], normal_vector)
             z_axis = normal_vector / np.linalg.norm(normal_vector)
-            _r = np.array([y_axis, x_axis, -z_axis]).T
+            _r = np.array([-x_axis, y_axis, -z_axis]).T
+            print("Rotation matrix:\n", _r)
             _t = origin + z_axis * height
             print("Look at object position:", _t)
 
@@ -86,7 +87,8 @@ class R2GaussianSceneRenderer:
             z_axis = charuco_tf[:3, 2]
             # z_axisの大きさを正規化
             z_axis = z_axis / np.linalg.norm(z_axis)
-            _r = np.array([y_axis, x_axis, -z_axis]).T
+            _r = np.array([-x_axis, y_axis, -z_axis]).T
+            print("Rotation matrix:\n", _r)
             _t = origin + z_axis * height
 
         return Camera(
@@ -453,7 +455,7 @@ if __name__ == "__main__":
 
     image2pose = Image2Pose(Path("C:\\Users\\Maemaeko\\imari_lab\\r2_gaussian\\volunme_slicing_display\\camera_calibration"))
     image2pose.read_intrinsics()
-    image = Path(r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\debug\capture_20250726_162439.png")
+    image = Path(r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\debug\capture_20250726_162456.png")
     image = cv2.imread(str(image))
     marker_corners, marker_ids = image2pose.detect_markers(image)
     rvec, tvec = image2pose.detect_charuco(image, marker_corners, marker_ids)
@@ -463,7 +465,7 @@ if __name__ == "__main__":
 
 
     #renderer.plot_board_transform(charuco_tf, charuco_center, colors=('r', 'g', 'b'), eye_position="lookatobject")
-    eye_position = "top"  # or "top", "lookatobject", "board"
+    eye_position = "board"  # or "top", "lookatobject", "board"
     cut_method = "by_plane"  # or "by_plane"
     d = 0.1
 
