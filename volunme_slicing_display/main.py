@@ -26,7 +26,7 @@ def main(image_folder=None, rendering_folder=None, visualization_folder=None, co
     )
     d = 0.1
     eye_position = "top"
-    cut_method = "by_plane"
+    cut_method = "beyond_plane"
     first = True
 
 
@@ -86,7 +86,8 @@ def main(image_folder=None, rendering_folder=None, visualization_folder=None, co
                 rendering_cut = cv2.cvtColor(rendering_cut, cv2.COLOR_GRAY2BGR)
 
         
-        output_image = np.concatenate([image, rendering_cut], axis=1)
+        #output_image = np.concatenate([image, rendering_cut], axis=1)
+        output_image = rendering_cut
         window_name = "RealTime View"
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
         if first:

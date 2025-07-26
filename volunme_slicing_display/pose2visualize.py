@@ -10,6 +10,7 @@ import copy
 import open3d as o3d
 import yaml
 from pathlib import Path
+from image2pose import Image2Pose
 
 
 sys.path.append("./")
@@ -66,7 +67,7 @@ class R2GaussianSceneRenderer:
 
         elif eye_position == "lookatobject":
             origin = charuco_tf[:3, 3]
-            normal_vector = charuco_center
+            normal_vector = charuco_center#.ravel()
             def project_onto_plane(vec, normal):
                 normal = normal / np.linalg.norm(normal)
                 return vec - np.dot(vec, normal) * normal
@@ -191,10 +192,6 @@ class R2GaussianSceneRenderer:
 
             rendering = render(view, self.gaussians, self.pipeline)["render"][0].detach().cpu().numpy()
             rendering_cut = render(view, cut_gaussians, self.pipeline)["render"][0].detach().cpu().numpy()
-            #　左右反転
-            rendering_cut = rendering_cut[:, ::-1]
-            #　上下反転
-            rendering_cut = rendering_cut[::-1, :]
 
             if interactive:
                 print("Rendering shape:", rendering.shape)
@@ -396,6 +393,51 @@ class R2GaussianSceneRenderer:
         cv2.imshow("Rendered Image", image)
         cv2.waitKey(0)
 
+    def charuco_pose_debug(self, charuco_center, charuco_tf):
+        """Debug function to visualize ChArUco pose."""
+        def plot_frame(ax, tf, charuco_center, label, colors=('r','g','b')):
+            """4x4 同次変換行列 tf をもとに座標軸を描画する関数"""
+            origin = tf[:3, 3] 
+            x_axis = tf[:3, 0]
+            y_axis = tf[:3, 1]
+            z_axis = tf[:3, 2]
+            
+            # charuco_centerを表示
+            ax.scatter(*charuco_center, color='orange', s=50, label='ChArUco Center')
+
+
+            ax.quiver(*origin, *x_axis, length=0.2, normalize=True, color=colors[0])
+            ax.quiver(*origin, *y_axis, length=0.2, normalize=True, color=colors[1])
+            ax.quiver(*origin, *z_axis, length=0.2, normalize=True, color=colors[2])
+            ax.text(*(origin + x_axis * 0.25), f'{label}_X', color=colors[0])
+            ax.text(*(origin + y_axis * 0.25), f'{label}_Y', color=colors[1])
+            ax.text(*(origin + z_axis * 0.25), f'{label}_Z', color=colors[2])
+        # 3D プロットの準備
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+        camera_tf = np.eye(4)
+        # カメラ座標系を黒で描画
+        plot_frame(ax, camera_tf, charuco_center, 'Camera', colors=('k','k','k'))
+        # ボード座標系を色付きで描画
+        plot_frame(ax, charuco_tf, charuco_center, 'Board', colors=('r','g','b'))
+
+        # 軸ラベルとタイトル
+        ax.set_xlabel('X (Camera)')
+        ax.set_ylabel('Y (Camera)')
+        ax.set_zlabel('Z (Camera)')
+        ax.set_title('ChArUco Board Pose in Camera Coordinate System')
+
+        # アスペクト比を揃える
+        points = np.vstack((camera_tf[:3,3], charuco_tf[:3,3]))
+        max_range = points.ptp(axis=0).max() / 2.0
+        mid = points.mean(axis=0)
+        ax.set_xlim(mid[0] - max_range, mid[0] + max_range)
+        ax.set_ylim(mid[1] - max_range, mid[1] + max_range)
+        ax.set_zlim(mid[2] - max_range, mid[2] + max_range)
+
+        plt.show()
+        
+
 
 
 if __name__ == "__main__":
@@ -405,14 +447,29 @@ if __name__ == "__main__":
         model_path="../output/95e359ad-b",
         data_device="cuda"
     )
-    charuco_path =  "charuco_camera_transformation.npz"
-    charuco_tf = np.load(charuco_path)["charuco_tf"]
-    charuco_center = np.array([-0.00781352, -0.01640093, 0.4141831])
+    # charuco_path =  "charuco_camera_transformation.npz"
+    # charuco_tf = np.load(charuco_path)["charuco_tf"]
+    # charuco_center = np.array([-0.00781352, -0.01640093, 0.4141831])
+
+    image2pose = Image2Pose(Path("C:\\Users\\Maemaeko\\imari_lab\\r2_gaussian\\volunme_slicing_display\\camera_calibration"))
+    image2pose.read_intrinsics()
+    image = Path(r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\debug\capture_20250726_162439.png")
+    image = cv2.imread(str(image))
+    marker_corners, marker_ids = image2pose.detect_markers(image)
+    rvec, tvec = image2pose.detect_charuco(image, marker_corners, marker_ids)
+    tvec -= np.array([[0], [0], [0.5]])
+    charuco_tf, _ = image2pose.output_transform(rvec, tvec)
+    charuco_center = image2pose.output_charuco_center(rvec, tvec)
+
+
     #renderer.plot_board_transform(charuco_tf, charuco_center, colors=('r', 'g', 'b'), eye_position="lookatobject")
-    eye_position = "board"  # or "top", "lookatobject", "board"
+    eye_position = "top"  # or "top", "lookatobject", "board"
     cut_method = "by_plane"  # or "by_plane"
     d = 0.1
 
     rendering, rendering_cut = renderer.render_gaussians(charuco_tf, charuco_center, d, eye_position, cut_method)
+    cv2.imshow("Rendering_cut", rendering_cut)
+    renderer.charuco_pose_debug(charuco_center, charuco_tf)
 
-    renderer.visualize(charuco_tf, charuco_center, rendering=rendering_cut, eye_position=eye_position, interactive=False)
+
+    renderer.visualize(charuco_tf, charuco_center, rendering=rendering_cut, eye_position=eye_position, interactive=True)

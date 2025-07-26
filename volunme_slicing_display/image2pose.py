@@ -68,15 +68,7 @@ class Image2Pose:
         valid, rvec, tvec = cv2.solvePnP(objPoints, imgPoints, self.cameraMatrix, self.distCoeffs)
         cv2.drawFrameAxes(imcharuco, self.cameraMatrix, self.distCoeffs, rvec, tvec, self.square_length * 3)
 
-
         print("Translation Vector:\n", tvec)
-        tvec -= np.array([[0], [0], [0.5]])
-        print(rvec)
-        # rvecを90度回転
-        rvec = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]]) @ rvec
-        # rvecを-90度回転
-        #rvec = np.array([[0, 1, 0], [-1, 0, 0], [0, 0, 1]]) @ rvec
-        
         
 
         return rvec, tvec
@@ -112,14 +104,6 @@ class Image2Pose:
     
 if __name__ == "__main__":
     import argparse
-    # parser = argparse.ArgumentParser(description="Process movie to pose.")
-    # parser.add_argument("path", type=str, help="Path to the movie file or directory containing images.")
-    # args = parser.parse_args()
-
-    # movie2pose = Movie2Pose(args.path)
-    # movie2pose.read_intrinsics()
-    # movie2pose.detect_markers()
-    # Example usage
     image2pose = Image2Pose(Path("C:\\Users\\Maemaeko\\imari_lab\\r2_gaussian\\volunme_slicing_display\\camera_calibration"))
     image_path = Path(r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\images\capture_20250617_175949.png")
     image2pose.read_intrinsics()
