@@ -38,7 +38,7 @@ from pathlib import Path
 
 
 class R2GaussianSceneRenderer:
-    def __init__(self, source_path: str = "..data/synthetic_dataset/cone_ntrain_75_angle_360/0_chest_cone", model_path: str = "output/95e359ad-b", data_device: str = "cuda"):
+    def __init__(self, source_path: str = "../data/synthetic_dataset/cone_ntrain_75_angle_360/0_chest_cone", model_path: str = "output/95e359ad-b", data_device: str = "cuda"):
         parser = ArgumentParser(description="Read Gaussian model from file")
         model = ModelParams(parser, sentinel=True)
         self.pipeline = PipelineParams(parser)
