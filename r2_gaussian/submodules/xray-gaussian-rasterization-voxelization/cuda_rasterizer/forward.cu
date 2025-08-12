@@ -8,6 +8,8 @@
  *
  * For inquiries contact  george.drettakis@inria.fr
  */
+#define _USE_MATH_DEFINES
+#include <cmath>
 #include <stdio.h> // for debug
 #include "forward.h"
 #include "auxiliary.h"

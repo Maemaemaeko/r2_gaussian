@@ -9,6 +9,8 @@
  * For inquiries contact  george.drettakis@inria.fr
  */
 
+#define _USE_MATH_DEFINES
+#include <cmath>
 #include "backward.h"
 #include "auxiliary.h"
 #include <cooperative_groups.h>
