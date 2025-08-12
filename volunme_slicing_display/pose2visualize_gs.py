@@ -58,7 +58,7 @@ class GaussianSceneRenderer:
         self.pipeline = pipeline.extract(args)
 
         bg_color = [1,1,1] if self.dataset.white_background else [0, 0, 0]
-        self.background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+        self.background = torch.tensor(bg_color, dtype=torch.float32, device=data_device)
 
 
         self.gaussians = GaussianModel(self.dataset.sh_degree)
@@ -110,7 +110,7 @@ class GaussianSceneRenderer:
             invdepthmap=None
         )
 
-    def render_gaussians(self, charuco_tf, charuco_center, height=0.1, eye_position: str = "top", interactive=False):
+    def render_gaussians(self, charuco_tf, charuco_center, height=4, eye_position: str = "top", interactive=False):
         view = self.get_eye_view(charuco_tf, charuco_center, eye_position, height=height)
         print(view.world_view_transform)
 
@@ -139,7 +139,7 @@ if __name__ == "__main__":
     charuco_tf, _ = image2pose.output_transform(rvec, tvec)
     charuco_center = image2pose.output_charuco_center(rvec, tvec)
 
-    rendering = renderer.render_gaussians(charuco_tf, charuco_center, height=4)
+    rendering = renderer.render_gaussians(charuco_tf, charuco_center, height=4, eye_position="board")
     cv2.imshow("Rendering", rendering.permute(1, 2, 0).cpu().numpy())
     cv2.waitKey(0)
     cv2.destroyAllWindows()

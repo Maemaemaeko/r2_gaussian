@@ -1,6 +1,7 @@
 import time
 from image2pose import Image2Pose
 from pose2visualize import R2GaussianSceneRenderer
+from pose2visualize_gs import GaussianSceneRenderer
 from pathlib import Path
 import os
 import numpy as np
@@ -14,17 +15,20 @@ def main(image_folder=None, rendering_folder=None, visualization_folder=None, co
     image2pose = Image2Pose(Path("C:\\Users\\Maemaeko\\imari_lab\\r2_gaussian\\volunme_slicing_display\\camera_calibration"))
     image2pose.read_intrinsics()
 
-    # 画像フォルダ内のすべての画像ファイルを取得
-    # image_files = [f for f in os.listdir(image_folder) if f.endswith(('.png', '.jpg', '.jpeg'))]
-    # print(f"Found {len(image_files)} images in {image_folder}")
-
     # renderingの設定
     renderer = R2GaussianSceneRenderer(
         source_path="../data/synthetic_dataset/cone_ntrain_75_angle_360/0_chest_cone",
         model_path="../output/95e359ad-b",
         data_device="cuda"
     )
+    renderer_gs = GaussianSceneRenderer(
+        source_path="../gaussian-splatting/data/bigfoot",
+        model_path="../gaussian-splatting/output/6bd50db1-7",
+        ply_path="../gaussian-splatting/output/6bd50db1-7/point_cloud/iteration_30000/point_cloud_v5.ply"
+    )
+
     d = 0.1
+    height = 4
     eye_position = "top"
     cut_method = "beyond_plane"
     first = True
@@ -76,7 +80,8 @@ def main(image_folder=None, rendering_folder=None, visualization_folder=None, co
             print("Failed to compute charuco transformation or center.")
             rendering_cut = np.zeros((480, 640, 3), dtype=np.uint8)  # 空の画像を生成
         else:
-            # レンダリングを実行    
+            # レンダリングを実行 
+            # NOTE: eye_positionはTop固定のほうがい？？
             _, rendering_cut = renderer.render_gaussians(charuco_tf, charuco_center, d, eye_position, cut_method)
             rendering_cut /= np.max(rendering_cut)  # 正規化
             # (480, 640, 3)の形状に変換
@@ -85,9 +90,14 @@ def main(image_folder=None, rendering_folder=None, visualization_folder=None, co
             if rendering_cut.ndim == 2:
                 rendering_cut = cv2.cvtColor(rendering_cut, cv2.COLOR_GRAY2BGR)
 
+            
+            rendering_gs = renderer_gs.render_gaussians(charuco_tf, charuco_center, height, eye_position)
+            if rendering_gs is not None:
+                rendering_gs = rendering_gs.permute(1, 2, 0).cpu().numpy()  # PyTorch tensorからNumPy配列に変換
+
         
-        #output_image = np.concatenate([image, rendering_cut], axis=1)
-        output_image = rendering_cut
+    
+        output_image = rendering_cut if tvec[2] < 1 else rendering_gs
         window_name = "RealTime View"
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
         if first:
@@ -108,21 +118,6 @@ def main(image_folder=None, rendering_folder=None, visualization_folder=None, co
     cv2.destroyAllWindows()
 
     cap.release()
-    cv2.destroyAllWindows()
-
-        # concat
-        #rint(image.shape, rendering_cut.shape)
-        # if rendering_cut.ndim == 2:
-        #     rendering_cut = cv2.cvtColor(rendering_cut, cv2.COLOR_GRAY2BGR)
-        #     print(rendering_cut.shape)
-
-        # concat_images = np.concatenate([image, rendering_cut], axis=1)
-        # if concat_images is not None:
-        #     concat_image_path = os.path.join(concat_folder, f"concat_{image_file}")
-        #     save_numpy_image(concat_images, concat_image_path)
-        #     print(f"Saved concatenated image to: {concat_image_path}")
-    
-
 
     # GIF作成
     if create_gif and rendering_folder:

@@ -1,5 +1,7 @@
 from image2pose import Image2Pose
 from pose2visualize import R2GaussianSceneRenderer
+from pose2visualize_gs import GaussianSceneRenderer
+
 from pathlib import Path
 import os
 import numpy as np
@@ -17,12 +19,20 @@ def main(image_folder, rendering_folder=None, visualization_folder=None, concat_
 
     # renderingの設定
     renderer = R2GaussianSceneRenderer(
-        source_path="../data/synthetic_dataset/cone_ntrain_75_angle_360/0_chest_cone",
-        model_path="../output/95e359ad-b",
+        source_path="../data/synthetic_dataset/cone_ntrain_75_angle_360/0_foot_cone",
+        model_path="../output/4e0f2066-0",
         data_device="cuda"
     )
+
+    renderer_gs = GaussianSceneRenderer(
+        source_path="../gaussian-splatting/data/bigfoot",
+        model_path="../gaussian-splatting/output/6bd50db1-7",
+        ply_path="../gaussian-splatting/output/6bd50db1-7/point_cloud/iteration_30000/point_cloud_v5.ply"
+    )
+
     d = 0.1
-    eye_position = "top"
+    height = 4
+    eye_position = "board" # "top", "lookatobject", "board"
     cut_method = "by_plane"
 
 
@@ -47,18 +57,29 @@ def main(image_folder, rendering_folder=None, visualization_folder=None, concat_
 
 
         rvec, tvec = image2pose.detect_charuco(image, marker_corners, marker_ids)
+        print(f"Detected rvec: {rvec}, tvec: {tvec}")
+        tvec -= np.array([[0], [0], [1]])
         charuco_tf, _ = image2pose.output_transform(rvec, tvec)
         charuco_center = image2pose.output_charuco_center(rvec, tvec)
 
+        if charuco_tf is None or charuco_center is None:
+            print(f"Failed to compute charuco transformation or center for image: {image_file}")
+            continue
+
         # R2GaussianSceneRendererを使用してレンダリング
-        _, rendering_cut = renderer.render_gaussians(charuco_tf, charuco_center, d, eye_position, cut_method)
+        _, rendering_cut = renderer.render_gaussians(charuco_tf, charuco_center, d, "top", cut_method)
         if rendering_cut is not None:
             rendering_cut /= np.max(rendering_cut)  # 正規化
             save_numpy_image(rendering_cut, os.path.join(rendering_folder, f"rendering_cut_{image_file}"))
             print(f"Saved rendering cut image to: {os.path.join(rendering_folder, f'rendering_cut_{image_file}')}")
 
+        # GaussianSceneRendererを使用してレンダリング
+        rendering_gs = renderer_gs.render_gaussians(charuco_tf, charuco_center, height, eye_position)
+        if rendering_gs is not None:
+            rendering_gs = rendering_gs.permute(1, 2, 0).cpu().numpy()  # PyTorch tensorからNumPy配列に変換
+
         # 位置関係を可視化
-        image = renderer.visualize(charuco_tf, charuco_center, rendering=rendering_cut, eye_position=eye_position, interactive=False)
+        image = renderer.visualize(charuco_tf, charuco_center, rendering=rendering_cut, eye_position="top", interactive=False)
         if image is not None:
             # 画像を保存
             output_image_path = os.path.join(visualization_folder, f"rendered_{image_file}")
@@ -67,13 +88,14 @@ def main(image_folder, rendering_folder=None, visualization_folder=None, concat_
         else:
             print(f"Failed to render image: {image_file}")
 
-        # concat
+        # gaussian
         print(image.shape, rendering_cut.shape)
         if rendering_cut.ndim == 2:
             rendering_cut = cv2.cvtColor(rendering_cut, cv2.COLOR_GRAY2BGR)
-            print(rendering_cut.shape)
 
-        concat_images = np.concatenate([image, rendering_cut], axis=1)
+
+        output_image = rendering_cut if tvec[2] < 1 else rendering_gs
+        concat_images = np.concatenate([image, rendering_cut, rendering_gs], axis=1)
         if concat_images is not None:
             concat_image_path = os.path.join(concat_folder, f"concat_{image_file}")
             save_numpy_image(concat_images, concat_image_path)
@@ -134,10 +156,10 @@ def create_mov_from_images(image_folder, output_path):
 
 
 if __name__ == "__main__":
-    image_folder = r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\debug"
+    image_folder = r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\images"
     rendering_folder = r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\rendering"
     visualization_folder = r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\visualization"
-    concat_folder = r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\concat_images"
+    concat_folder = r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\concat_images_v2"
 
     main(image_folder, rendering_folder=rendering_folder,
          visualization_folder=visualization_folder,
