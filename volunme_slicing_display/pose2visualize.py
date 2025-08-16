@@ -62,12 +62,13 @@ class R2GaussianSceneRenderer:
 
     def get_eye_view(self, charuco_tf, charuco_center, eye_position: str = "top", height=4):
         if eye_position == "top":
-            _r = np.array([[0, 1, 0], [1, 0, 0], [0, 0, -1]])  # 上からの視点
+            _r = np.array([[-1, 0, 0], [0, 1, 0], [0, 0, -1]])  # 上からの視点
             _t = np.array([0, 0, height])
 
         elif eye_position == "lookatobject":
             origin = charuco_tf[:3, 3]
-            normal_vector = charuco_center.ravel()
+            # TODO: charuco_centerから取得できるようにする
+            normal_vector = origin.ravel()
             def project_onto_plane(vec, normal):
                 normal = normal / np.linalg.norm(normal)
                 return vec - np.dot(vec, normal) * normal
@@ -76,20 +77,20 @@ class R2GaussianSceneRenderer:
             y_axis = project_onto_plane(charuco_tf[:3, 1], normal_vector)
             z_axis = normal_vector / np.linalg.norm(normal_vector)
             _r = np.array([-x_axis, y_axis, -z_axis]).T
-            print("Rotation matrix:\n", _r)
-            _t = origin + z_axis * height
-            print("Look at object position:", _t)
+            _t = -_r.T @ (origin + z_axis * height)
 
-        elif eye_position == "board":
-            origin = charuco_tf[:3, 3]
-            x_axis = charuco_tf[:3, 0]
-            y_axis = charuco_tf[:3, 1]
-            z_axis = charuco_tf[:3, 2]
-            # z_axisの大きさを正規化
-            z_axis = z_axis / np.linalg.norm(z_axis)
-            _r = np.array([-x_axis, y_axis, -z_axis]).T
-            print("Rotation matrix:\n", _r)
-            _t = origin + z_axis * height
+
+        elif eye_position == "board": 
+                origin = charuco_tf[:3, 3]
+                # TODO: charuco_centerから取得できるようにする
+                x_axis = charuco_tf[:3, 0]
+                y_axis = charuco_tf[:3, 1]
+                z_axis = charuco_tf[:3, 2]
+                # z_axisの大きさを正規化
+                z_axis = z_axis / np.linalg.norm(z_axis)
+                _r = np.array([-x_axis, y_axis, -z_axis]).T
+                # _tで与えるべきはカメラ座標系なので、_r.Tをかける
+                _t = -_r.T @ (origin + np.array([0, 0, 4]))
 
         return Camera(
             colmap_id = 65,
@@ -163,6 +164,7 @@ class R2GaussianSceneRenderer:
         distance = torch.abs(torch.matmul(gaussians._xyz - origin, normal))
 
         mask  = distance > d
+        print("The number of gaussians cut by the plane:", mask.sum().item())
         gaussians._density[mask] = -100
 
 
@@ -180,7 +182,8 @@ class R2GaussianSceneRenderer:
             # 各centerから平面までの符号付き距離を計算
             distance = torch.matmul(gaussians._xyz - origin, normal)
 
-            mask  = distance < 0
+            mask  = distance > 0
+            print("The number of gaussians cut by the plane:", mask.sum().item())
             gaussians._density[mask] = -100
 
     def render_gaussians(self, charuco_tf, charuco_center, d=0.1, eye_position: str = "top", cut_method: str="by_plane", interactive=False):
@@ -270,15 +273,15 @@ class R2GaussianSceneRenderer:
                 rendering
             )
            
-            # charucoボードを可視化
-            charuco_size = (2, 2)
+            # charucoボードを可視化 
+            # TODO: サイズがあっているかどうか怪しい
+            charuco_size = (0.12 * 7, 0.12 * 5)
             w, h = charuco_size
-            half_w, half_h = w / 2, h / 2
             local_corners = np.array([
-                [-half_w, -half_h, 0],
-                [half_w, -half_h, 0],
-                [half_w, half_h, 0],
-                [-half_w, half_h, 0]
+                [0, 0, 0],
+                [w, h, 0],
+                [w, 0, 0],
+                [0, h, 0]
             ])
 
             local_corners_h = np.hstack([local_corners, np.ones((4, 1))])  # → (4, 4)
@@ -446,32 +449,40 @@ if __name__ == "__main__":
     # Example usage
     renderer = R2GaussianSceneRenderer(
         source_path="../data/synthetic_dataset/cone_ntrain_75_angle_360/0_chest_cone",
+        #model_path="../output/4e0f2066-0",
         model_path="../output/95e359ad-b",
         data_device="cuda"
     )
+
     # charuco_path =  "charuco_camera_transformation.npz"
     # charuco_tf = np.load(charuco_path)["charuco_tf"]
     # charuco_center = np.array([-0.00781352, -0.01640093, 0.4141831])
 
     image2pose = Image2Pose(Path("C:\\Users\\Maemaeko\\imari_lab\\r2_gaussian\\volunme_slicing_display\\camera_calibration"))
     image2pose.read_intrinsics()
-    image = Path(r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\debug\capture_20250726_162456.png")
+    # 上から
+    image = Path(r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\captures_0816_v3\capture_20250816_153826.png")
+    # 斜め
+    #image = Path(r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\images\capture_20250815_142757.png")
     image = cv2.imread(str(image))
     marker_corners, marker_ids = image2pose.detect_markers(image)
     rvec, tvec = image2pose.detect_charuco(image, marker_corners, marker_ids)
-    tvec -= np.array([[0], [0], [0.5]])
+    #tvec -= np.array([[0], [0], [0.5]])
     charuco_tf, _ = image2pose.output_transform(rvec, tvec)
-    charuco_center = image2pose.output_charuco_center(rvec, tvec)
+    charuco_center = image2pose.output_charuco_center(charuco_tf)
+    print("Charuco Center:", charuco_center)
 
 
     #renderer.plot_board_transform(charuco_tf, charuco_center, colors=('r', 'g', 'b'), eye_position="lookatobject")
-    eye_position = "board"  # or "top", "lookatobject", "board"
-    cut_method = "by_plane"  # or "by_plane"
+    eye_position = "lookatobject"  # or "top", "lookatobject", "board"
+    cut_method = "beyond_plane"  # or "by_plane"
     d = 0.1
 
     rendering, rendering_cut = renderer.render_gaussians(charuco_tf, charuco_center, d, eye_position, cut_method)
     cv2.imshow("Rendering_cut", rendering_cut)
-    renderer.charuco_pose_debug(charuco_center, charuco_tf)
+    cv2.waitKey(0)
+
+    #renderer.charuco_pose_debug(charuco_center, charuco_tf)
 
 
     renderer.visualize(charuco_tf, charuco_center, rendering=rendering_cut, eye_position=eye_position, interactive=True)

@@ -20,20 +20,21 @@ def main(image_folder, rendering_folder=None, visualization_folder=None, concat_
     # renderingの設定
     renderer = R2GaussianSceneRenderer(
         source_path="../data/synthetic_dataset/cone_ntrain_75_angle_360/0_foot_cone",
-        model_path="../output/4e0f2066-0",
+        model_path="../output/4e0f2066-0", # foot
+        #model_path="../output/95e359ad-b", # chest
         data_device="cuda"
     )
 
     renderer_gs = GaussianSceneRenderer(
         source_path="../gaussian-splatting/data/bigfoot",
         model_path="../gaussian-splatting/output/6bd50db1-7",
-        ply_path="../gaussian-splatting/output/6bd50db1-7/point_cloud/iteration_30000/point_cloud_v5.ply"
+        ply_path="../gaussian-splatting/output/6bd50db1-7/point_cloud/iteration_30000/point_cloud_v4.ply"
     )
 
     d = 0.1
     height = 4
-    eye_position = "board" # "top", "lookatobject", "board"
-    cut_method = "by_plane"
+    eye_position = "lookatobject" # "top", "lookatobject", "board" # lookatobjectは機能していない
+    cut_method = "beyond_plane"
 
 
     # 保存先のフォルダを作成
@@ -60,14 +61,14 @@ def main(image_folder, rendering_folder=None, visualization_folder=None, concat_
         print(f"Detected rvec: {rvec}, tvec: {tvec}")
         tvec -= np.array([[0], [0], [1]])
         charuco_tf, _ = image2pose.output_transform(rvec, tvec)
-        charuco_center = image2pose.output_charuco_center(rvec, tvec)
+        charuco_center = image2pose.output_charuco_center(charuco_tf)
 
         if charuco_tf is None or charuco_center is None:
             print(f"Failed to compute charuco transformation or center for image: {image_file}")
             continue
 
         # R2GaussianSceneRendererを使用してレンダリング
-        _, rendering_cut = renderer.render_gaussians(charuco_tf, charuco_center, d, "top", cut_method)
+        _, rendering_cut = renderer.render_gaussians(charuco_tf, charuco_center, d, eye_position, cut_method)
         if rendering_cut is not None:
             rendering_cut /= np.max(rendering_cut)  # 正規化
             save_numpy_image(rendering_cut, os.path.join(rendering_folder, f"rendering_cut_{image_file}"))
@@ -79,7 +80,7 @@ def main(image_folder, rendering_folder=None, visualization_folder=None, concat_
             rendering_gs = rendering_gs.permute(1, 2, 0).cpu().numpy()  # PyTorch tensorからNumPy配列に変換
 
         # 位置関係を可視化
-        image = renderer.visualize(charuco_tf, charuco_center, rendering=rendering_cut, eye_position="top", interactive=False)
+        image = renderer.visualize(charuco_tf, charuco_center, rendering=rendering_cut, eye_position=eye_position, interactive=False)
         if image is not None:
             # 画像を保存
             output_image_path = os.path.join(visualization_folder, f"rendered_{image_file}")
@@ -156,10 +157,10 @@ def create_mov_from_images(image_folder, output_path):
 
 
 if __name__ == "__main__":
-    image_folder = r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\images"
+    image_folder = r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\captures_0816_v3"
     rendering_folder = r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\rendering"
     visualization_folder = r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\visualization"
-    concat_folder = r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\concat_images_v2"
+    concat_folder = r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\concat_images_v3_lookatobject"
 
     main(image_folder, rendering_folder=rendering_folder,
          visualization_folder=visualization_folder,
