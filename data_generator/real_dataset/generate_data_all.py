@@ -45,9 +45,9 @@ if __name__ == "__main__":
     parser.add_argument("--data", default="data_generator/real_dataset/FIPS_processed", type=str, help="Path to FIPS processed data.")
     parser.add_argument("--output", default="data/real_dataset", type=str, help="Path to output.")
     
-    parser.add_argument("--proj_subsample", default=4, type=int, help="subsample projections pixels")
+    parser.add_argument("--proj_subsample", default=1, type=int, help="subsample projections pixels")
     parser.add_argument("--proj_rescale", default=400.0, type=float, help="rescale projection values to fit density to around [0,1]")
-    parser.add_argument("--object_scale", default=50, type=int, help="subsample number of views as sparse-view")
+    parser.add_argument("--object_scale", default=15, type=int, help="subsample number of views as sparse-view")
     parser.add_argument("--n_test", default=100, type=int, help="number of test")
     parser.add_argument("--n_train", default=75, type=int, help="number of train")
     

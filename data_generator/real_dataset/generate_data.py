@@ -89,6 +89,8 @@ def main(args):
             )
 
         proj = scipy.io.loadmat(proj_mat_path)["img"] / proj_rescale * object_scale
+        # projをjpegで保存
+        cv2.imwrite(osp.join(all_save_path, proj_save_name + ".jpg"), proj / np.max(proj) * 255)
         proj = proj.astype(np.float32)
         proj[proj < 0] = 0
         # Shift left for 5 pixels according to dataset description
@@ -143,6 +145,7 @@ def main(args):
         "noise": True,
         "filter": None,
     }
+    print("Scanner config:", scanner_cfg)
 
     # Reconstruct with FDK as gt
     ct_gt_save_path = osp.join(output_path, "vol_gt.npy")
@@ -182,7 +185,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", type=str, help="Path to FIPS processed data.")
     parser.add_argument("--output", type=str, help="Path to output.")
-    parser.add_argument("--proj_subsample", default=4, type=int, help="subsample projections pixels")
+    parser.add_argument("--proj_subsample", default=1, type=int, help="subsample projections pixels")
     parser.add_argument("--proj_rescale", default=400.0, type=float, help="rescale projection values to fit density to around [0,1]")
     parser.add_argument("--object_scale", default=50, type=int, help="Rescale the whole scene to similar scales as the synthetic data")
     parser.add_argument("--n_test", default=100, type=int, help="number of test")

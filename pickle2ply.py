@@ -10,6 +10,7 @@ matplotlib.use("TkAgg")  # Force it to use the Qt5 GUI backend
 print(matplotlib.get_backend())
 import matplotlib.cm as cm
 import matplotlib.pyplot as plt
+
 def pickle_to_ply(pickle_path, ply_path):
     # Load the pickle file
     with open(pickle_path, "rb") as f:
@@ -35,8 +36,9 @@ def pickle_to_ply(pickle_path, ply_path):
     # opacities_norm = opacity_shifted / opacity_shifted.max()  # Normalize to [0,1]
     #
     # # Map to colors using plasma colormap
-    colormap = cm.get_cmap("inferno")  # You can change this to any colormap you prefer
+    # colormap = cm.get_cmap("inferno")  # You can change this to any colormap you prefer
     # colors = colormap(opacities_norm.flatten())[:, :3]  # Extract RGB, ignore alpha
+    colormap = matplotlib.colormaps.get_cmap("inferno")
 
     p_min, p_max = np.percentile(opacities, [5, 95])  # Ignore extreme outliers
     opacities_clipped = np.clip(opacities, p_min, p_max)
@@ -63,6 +65,7 @@ def pickle_to_ply(pickle_path, ply_path):
 
     # Define PLY attributes format
     dtype_full = [
+        
         ("x", "f4"), ("y", "f4"), ("z", "f4"),
         ("nx", "f4"), ("ny", "f4"), ("nz", "f4"),
         ("f_dc_0", "f4"), ("f_dc_1", "f4"), ("f_dc_2", "f4"),
@@ -90,9 +93,10 @@ def pickle_to_ply(pickle_path, ply_path):
     # Save as PLY
     el = PlyElement.describe(elements, "vertex")
     PlyData([el]).write(ply_path)
+    return 
 
 # Example usage
-input_pickle = "/home/maemaeko/imari_lab/r2_gaussian/output/4c6defb3-7/point_cloud/iteration_30000/point_cloud.pickle"
+input_pickle = "/home/maemaeko/imari_lab/r2_gaussian/output/5bdb2914-5/point_cloud/iteration_30000/point_cloud.pickle"
 output_ply = input_pickle.split(".")[0] + ".ply"
 
 pickle_to_ply(input_pickle, output_ply)
