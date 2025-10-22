@@ -46,7 +46,7 @@ def readBlenderInfo(path, eval):
     meta_data_path = osp.join(path, "meta_data.json")
     with open(meta_data_path, "r") as handle:
         meta_data = json.load(handle)
-    meta_data["vol"] = osp.join(path, meta_data["vol"])
+    meta_data["vol"] = osp.join(path, meta_data["ct"])
 
     if not "dVoxel" in meta_data["scanner"]:
         meta_data["scanner"]["dVoxel"] = list(
