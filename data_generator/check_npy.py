@@ -121,45 +121,78 @@ def point_depths_from_camera(
     u = (fx * (Xc / Zc)) + cx
     v = (fy * (Yc / Zc)) + cy
     in_img = (u >= 0) & (u <= (W - 1)) & (v >= 0) & (v <= (H - 1))
-    valid = in_img
+    #valid = in_img
+    # valid  = (u >= (W * 0.5)) & (v >= (H * 0.5))
+    # u = u[valid]
+    # v = v[valid]
+    # Zc = Zc[valid]
+
 
 
     # === 5) 出力 (N,1) で順序保持。無効は NaN ===
     fdk_depths = torch.full((xyz.shape[0], 1), float('nan'), dtype=torch.float32, device=device)
-    fdk_depths[valid, 0] = Zc[valid]
+    #fdk_depths[valid, 0] = Zc #[valid]
+    fdk_depths[:, 0] = Zc
+    #(u, v, fdk_depths)をcsvとしてexport
+    #np.savetxt("uv_depths.csv", np.stack([u.cpu().numpy(), v.cpu().numpy(), Zc.cpu().numpy()], axis=-1), delimiter=",", header="u,v,depth", comments="")
     
     
-    gt_depth_npy = "/home/maemaeko/imari_lab/gaussian-splatting/depth.npy"
+    
+    gt_depth_npy = "/home/maemaeko/imari_lab/gaussian-splatting/output/teapot-aligned-rescale/train/ours_30000/renders/00000.npy"
     gt_depth = np.load(gt_depth_npy)
     gt_depth = torch.from_numpy(gt_depth).to(device=device, dtype=torch.float32)
-    gt_depth = F.interpolate(
-        gt_depth.unsqueeze(0).unsqueeze(0), size=(H, W), mode="bilinear", align_corners=False
-    ).squeeze(0).squeeze(0)
+    # gt_depth = F.interpolate(
+    #     gt_depth.unsqueeze(0).unsqueeze(0), size=(H, W), mode="bilinear", align_corners=False
+    # ).squeeze(0).squeeze(0)
     # 逆数をとる
     gt_depth = 1.0 / (gt_depth + 1e-8)
-
-    
-    #　正規化
-    # gt_depth_image = (gt_depth - gt_depth.min()) / (gt_depth.max() - gt_depth.min() + 1e-8)
-    # plt.imshow(gt_depth_image.cpu().numpy(), cmap="gray")
-    # plt.show()
-    # gt_depthのヒスとグラムを表示
-    # plt.hist(gt_depth.cpu().numpy(), bins=50)
-    # plt.xlabel("Depth")
+    #print(gt_depth[125, 104])
+    # # gt_depth < 100のみ有効とする
+    # gt_depth = torch.where(gt_depth < 10.0, gt_depth, torch.tensor(float('nan'), device=device))
+    # gt_depth = torch.where(4 < gt_depth , gt_depth, torch.tensor(float('nan'), device=device))
+    # plt.hist(gt_depth.cpu().numpy().flatten(), bins=1000)
+    # plt.title("gt_depth Histogram")
+    # plt.xlabel("gt_depth")
     # plt.ylabel("Frequency")
     # plt.show()
-    #print(gt_depth.min(), gt_depth.max()) # 4~5あたりのはず
-    # 正規化する
-    #gt_depth = (gt_depth - gt_depth.min()) / (gt_depth.max() - gt_depth.min() + 1e-8)
-    #plt.imshow(gt_depth.cpu().numpy(), cmap="gray")
-    #plt.show()
+    # gt_depthを可視化
+    plt.imshow(gt_depth.cpu().numpy(), cmap="gray")
+    plt.title("gt_depth Visualization")
+    plt.show()
 
-    valid_depth = gt_depth[v.long(), u.long()] < fdk_depths[:, 0]
-    print(valid_depth.sum())
-    valid_depth = valid_depth & valid
+
+    
+    # for i in range(fdk_depths.shape[0]):
+    #     if not in_img[i]:
+    #         continue
+    #     u_i = int(round(u[i].item()))
+    #     v_i = int(round(v[i].item()))
+    #     if fdk_depths[i, 0] < gt_depth[v_i, u_i]:
+    #         #print(f"Point {i}: u {u_i}, v {v_i}, fdk_depth {fdk_depths[i, 0].item()} < gt_depth {gt_depth[v_i, u_i].item()}")
+    #         diff = gt_depth[v_i, u_i] - fdk_depths[i, 0]
+    #         if diff < 1000:
+    #             print(f"Point {i}: u {u_i}, v {v_i}, Difference: {diff.item()}")
+    #             diff_image[v_i, u_i] = 1
+
+
+    valid_depth = gt_depth[v.long(), u.long()] < fdk_depths[:, 0] + 1.5
+    invalid_depth = ~valid_depth
+    # print(valid_depth.sum())
+    # valid = valid_depth & valid
+    # print(valid.sum())
+
+    # gt_depth_valid = gt_depth[v[valid].long(), u[valid].long()]
+    # plt.hist(gt_depth_valid.cpu().numpy(), bins=1000)
+    # plt.show()
 
     depths_img = torch.zeros((H, W, 1), dtype=torch.float32, device=device)
-    depths_img[v[valid].long(), u[valid].long(), 0] = 1 # depths[valid, 0]
+    depths_img[v[invalid_depth].long(), u[invalid_depth].long(), 0] = fdk_depths[invalid_depth, 0]
+    #= 1 # depths[valid, 0]
+
+
+
+    pts_valid = pts[valid_depth, :]
+    visualize_point_cloud(pts_valid.cpu().numpy())
     return depths_img
 
 if __name__ == "__main__":
