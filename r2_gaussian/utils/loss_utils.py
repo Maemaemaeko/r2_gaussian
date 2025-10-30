@@ -34,6 +34,12 @@ def tv_3d_loss(vol, reduction="sum"):
     return tv
 
 
+def voxel_empty_loss(vol):
+    loss = torch.sum(vol)
+    return loss
+    
+
+
 def l1_loss(network_output, gt):
     return torch.abs((network_output - gt)).mean()
 
