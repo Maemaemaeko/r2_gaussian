@@ -249,7 +249,7 @@ def get_camera_params_from_gs_settings(camera_params_dir, idx):
 
 
 if __name__ == "__main__":
-    pts = np.load("/home/maemaeko/imari_lab/r2_gaussian/data/real_dataset/cone_ntrain_10_angle_360/teapot/init_teapot.npy")  
+    pts = np.load("/home/maemaeko/imari_lab/r2_gaussian/data/real_dataset/cone_ntrain_3_angle_360/teapot/init_teapot.npy")  
     visualize_point_cloud(pts)
     gs_depth_npy_dir = "/home/maemaeko/imari_lab/gaussian-splatting/output/teapot-aligned-rescale/train/ours_30000/renders"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -269,9 +269,10 @@ if __name__ == "__main__":
     
 
     pts_valid = pts[valid_depth, :]
+
     
     # 保存先を決める（元データファイルと同じディレクトリ）
-    src_path = "/home/maemaeko/imari_lab/r2_gaussian/data/real_dataset/cone_ntrain_10_angle_360/teapot/init_teapot.npy"
+    src_path = "/home/maemaeko/imari_lab/r2_gaussian/data/real_dataset/cone_ntrain_3_angle_360/teapot/init_teapot.npy"
     out_dir = os.path.dirname(src_path)
     out_name = "init_teapot_valid.npy"
     out_path = os.path.join(out_dir, out_name)
@@ -280,6 +281,39 @@ if __name__ == "__main__":
 
     visualize_point_cloud(pts_valid)
     
+    N_total = pts.shape[0]
+    n_valid = pts_valid.shape[0]
+
+    if n_valid == 0:
+        raise RuntimeError("validな点が0です。しきい値が厳しすぎる可能性があります。")
+
+    if n_valid < N_total:
+        deficit = N_total - n_valid  # 何個足りないか
+
+        # 追加分の行を、validな点からランダムサンプリングで複製
+        rand_idx = np.random.randint(low=0, high=n_valid, size=deficit, dtype=np.int64)
+        duplicated = pts_valid[rand_idx]  # shape = (deficit, D)
+
+        pts_final = np.concatenate([pts_valid, duplicated], axis=0)
+    else:
+        # そもそも減ってないならそのまま
+        pts_final = pts_valid
+
+    assert pts_final.shape[0] == N_total, f"{pts_final.shape[0]} != {N_total}"
+
+    print("Original N:", N_total)
+    print("After cull n_valid:", n_valid)
+    print("After fill pts_final.shape[0]:", pts_final.shape[0])
+
+    # 保存先を決める（元データファイルと同じディレクトリ）
+    out_dir = os.path.dirname(src_path)
+    out_name = "init_teapot_final.npy"
+    out_path = os.path.join(out_dir, out_name)
+    np.save(out_path, pts_final)
+    print(f"Saved filtered points to: {out_path}")
+
+    visualize_point_cloud(pts_final)
+
 
     
 

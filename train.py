@@ -21,12 +21,12 @@ import yaml
 
 sys.path.append("./")
 from r2_gaussian.arguments import ModelParams, OptimizationParams, PipelineParams
-from r2_gaussian.gaussian import GaussianModel, render, query, initialize_gaussian
+from r2_gaussian.gaussian import GaussianModel, render, query, initialize_gaussian, query_masked
 from r2_gaussian.utils.general_utils import safe_state
 from r2_gaussian.utils.cfg_utils import load_config
 from r2_gaussian.utils.log_utils import prepare_output_and_logger
 from r2_gaussian.dataset import Scene
-from r2_gaussian.utils.loss_utils import l1_loss, ssim, tv_3d_loss
+from r2_gaussian.utils.loss_utils import l1_loss, ssim, tv_3d_loss, voxel_empty_loss
 from r2_gaussian.utils.image_utils import metric_vol, metric_proj
 from r2_gaussian.utils.plot_utils import show_two_slice
 
@@ -130,6 +130,7 @@ def training(
             tv_vol_center = (bbox[0] + tv_vol_sVoxel / 2) + (
                 bbox[1] - tv_vol_sVoxel - bbox[0]
             ) * torch.rand(3)
+            print(tv_vol_center)
             vol_pred = query(
                 gaussians,
                 tv_vol_center,
@@ -137,9 +138,32 @@ def training(
                 tv_vol_sVoxel,
                 pipe,
             )["vol"]
+            print(vol_pred.shape)
             loss_tv = tv_3d_loss(vol_pred, reduction="mean")
+            print(loss_tv)
             loss["tv"] = loss_tv
             loss["total"] = loss["total"] + opt.lambda_tv * loss_tv
+        # 3D depth loss
+        use_depth = True
+        if use_depth:
+            # Randomly get the tiny volume center
+            tv_vol_center = torch.tensor([0, 0, 0])
+            tv_vol_nVoxel = torch.tensor([256, 256, 256])
+            tv_vol_sVoxel = torch.tensor(scanner_cfg["dVoxel"]) * tv_vol_nVoxel
+            mask_npy = "/home/maemaeko/imari_lab/r2_gaussian/data/real_dataset/cone_ntrain_3_angle_360/teapot/vol_binary.npy"
+            vol_pred = query_masked(
+                gaussians,
+                tv_vol_center,
+                tv_vol_nVoxel,
+                tv_vol_sVoxel,
+                mask_npy,
+                pipe,
+            )["vol"]
+            #loss_tv = tv_3d_loss(vol_pred, reduction="mean")
+            loss_depth = voxel_empty_loss(vol_pred) / 1000000
+            print(loss_depth)
+            loss["tv"] = loss_tv
+            loss["total"] = loss["total"] + opt.lambda_tv * loss_depth
 
         loss["total"].backward()
 
@@ -371,10 +395,10 @@ if __name__ == "__main__":
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
     parser.add_argument("--detect_anomaly", action="store_true", default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[5_000, 10_000, 20_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[])
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[1_000, 5_000, 10_000, 20_000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[1_000, 5_000, 10_000, 20_000])
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
+    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[5_000, 10_000, 20_000])
     parser.add_argument("--start_checkpoint", type=str, default=None)
     parser.add_argument("--config", type=str, default=None)
     args = parser.parse_args(sys.argv[1:])
