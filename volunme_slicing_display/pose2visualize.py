@@ -60,13 +60,14 @@ class R2GaussianSceneRenderer:
         #self.scene = Scene(dataset, shuffle=False)
 
 
-    def get_eye_view(self, charuco_tf, charuco_center, eye_position: str = "top", height=4):
+    def get_eye_view(self, charuco_tf, charuco_center, eye_position: str = "top", height=1.0):
         if eye_position == "top":
             _r = np.array([[-1, 0, 0], [0, 1, 0], [0, 0, -1]])  # 上からの視点
             _t = np.array([0, 0, height])
 
         elif eye_position == "lookatobject":
             origin = charuco_tf[:3, 3]
+            # TODO: tvecの値によって、z_axisの向きが変わってしまう
             # TODO: charuco_centerから取得できるようにする
             normal_vector = origin.ravel()
             def project_onto_plane(vec, normal):
@@ -77,7 +78,9 @@ class R2GaussianSceneRenderer:
             y_axis = project_onto_plane(charuco_tf[:3, 1], normal_vector)
             z_axis = normal_vector / np.linalg.norm(normal_vector)
             _r = np.array([-x_axis, y_axis, -z_axis]).T
+            print("_r:", _r)
             _t = -_r.T @ (origin + z_axis * height)
+            print("_t:", _t)
 
 
         elif eye_position == "board": 
@@ -89,8 +92,10 @@ class R2GaussianSceneRenderer:
                 # z_axisの大きさを正規化
                 z_axis = z_axis / np.linalg.norm(z_axis)
                 _r = np.array([-x_axis, y_axis, -z_axis]).T
+                print("_r: ", _r)
                 # _tで与えるべきはカメラ座標系なので、_r.Tをかける
-                _t = -_r.T @ (origin + np.array([0, 0, 4]))
+                _t = -_r.T @ (origin + np.array([0, 0, height]))
+                print("_t: ", _t)
 
         return Camera(
             colmap_id = 65,
@@ -99,8 +104,8 @@ class R2GaussianSceneRenderer:
             T = _t,
             angle=0.8366643629487514,
             mode=1,
-            FoVx=0.5565993180102227,
-            FoVy=0.5565993180102227,
+            FoVx=1.5,
+            FoVy=1.5,
             image=torch.zeros((1, 512, 512)),
             image_name="none",
             uid=15,
@@ -150,7 +155,7 @@ class R2GaussianSceneRenderer:
 
     def cut_gaussians_by_plane(self, gaussians, charuco_tf, d=0.1):
         with torch.no_grad():
-            origin = charuco_tf[:3, 3]
+            origin = charuco_tf[:3, 3] - np.array([0, 0, 1]) # NOTE: bbox補正
             normal = charuco_tf[:3, 2]
 
             # 正規化された法線ベクトル
@@ -170,7 +175,7 @@ class R2GaussianSceneRenderer:
 
     def cut_gaussians_beyond_plane(self, gaussians, charuco_tf, d=0.1):
         with torch.no_grad():
-            origin = charuco_tf[:3, 3]
+            origin = charuco_tf[:3, 3] - np.array([0, 0, 1]) # NOTE: bbox補正
             normal = charuco_tf[:3, 2]
             # 正規化された法線ベクトル
             normal = normal / np.linalg.norm(normal)
@@ -448,9 +453,9 @@ class R2GaussianSceneRenderer:
 if __name__ == "__main__":
     # Example usage
     renderer = R2GaussianSceneRenderer(
-        source_path="../data/synthetic_dataset/cone_ntrain_75_angle_360/0_chest_cone",
-        #model_path="../output/4e0f2066-0",
-        model_path="../output/95e359ad-b",
+        source_path=Path(r"C:\Users\Maemaeko\imari_lab\r2_gaussian\data\synthetic_dataset\cone_ntrain_75_angle_360\aEupholus_A_CT_cone"),
+        model_path=Path(r"C:\Users\Maemaeko\imari_lab\r2_gaussian\output\aEupholus_A_CT"),
+        #model_path="../output/95e359ad-b",
         data_device="cuda"
     )
 
@@ -462,19 +467,17 @@ if __name__ == "__main__":
     image2pose.read_intrinsics()
     # 上から
     image = Path(r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\captures_0816_v3\capture_20250816_153826.png")
+    #image = Path(r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\images\capture_20250815_142742.png")
     # 斜め
     #image = Path(r"C:\Users\Maemaeko\imari_lab\r2_gaussian\volunme_slicing_display\images\capture_20250815_142757.png")
     image = cv2.imread(str(image))
     marker_corners, marker_ids = image2pose.detect_markers(image)
     rvec, tvec = image2pose.detect_charuco(image, marker_corners, marker_ids)
-    #tvec -= np.array([[0], [0], [0.5]])
     charuco_tf, _ = image2pose.output_transform(rvec, tvec)
     charuco_center = image2pose.output_charuco_center(charuco_tf)
-    print("Charuco Center:", charuco_center)
-
 
     #renderer.plot_board_transform(charuco_tf, charuco_center, colors=('r', 'g', 'b'), eye_position="lookatobject")
-    eye_position = "lookatobject"  # or "top", "lookatobject", "board"
+    eye_position = "top"  # or "top", "lookatobject", "board"
     cut_method = "beyond_plane"  # or "by_plane"
     d = 0.1
 
