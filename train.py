@@ -116,35 +116,70 @@ def training(
 
         # Compute loss
         gt_image = viewpoint_cam.original_image.cuda()
+        frame_idx = int(viewpoint_cam.uid)
+
         loss = {"total": 0.0}
-        render_loss = l1_loss(image, gt_image)
-        loss["render"] = render_loss
-        loss["total"] += loss["render"]
-        if opt.lambda_dssim > 0:
-            loss_dssim = 1.0 - ssim(image, gt_image)
-            loss["dssim"] = loss_dssim
-            loss["total"] = loss["total"] + opt.lambda_dssim * loss_dssim
+        if frame_idx % 2 == 0:
+        #if True:
+            render_loss = l1_loss(image, gt_image)
+            loss["render"] = render_loss
+            loss["total"] += loss["render"]
+            if opt.lambda_dssim > 0:
+                loss_dssim = 1.0 - ssim(image, gt_image)
+                loss["dssim"] = loss_dssim
+                loss["total"] = loss["total"] + opt.lambda_dssim * loss_dssim
         # 3D TV loss
-        if use_tv:
-            # Randomly get the tiny volume center
-            tv_vol_center = (bbox[0] + tv_vol_sVoxel / 2) + (
-                bbox[1] - tv_vol_sVoxel - bbox[0]
-            ) * torch.rand(3)
-            print(tv_vol_center)
-            vol_pred = query(
-                gaussians,
-                tv_vol_center,
-                tv_vol_nVoxel,
-                tv_vol_sVoxel,
-                pipe,
-            )["vol"]
-            print(vol_pred.shape)
-            loss_tv = tv_3d_loss(vol_pred, reduction="mean")
-            print(loss_tv)
-            loss["tv"] = loss_tv
-            loss["total"] = loss["total"] + opt.lambda_tv * loss_tv
+            if use_tv:
+                # Randomly get the tiny volume center
+                tv_vol_center = (bbox[0] + tv_vol_sVoxel / 2) + (
+                    bbox[1] - tv_vol_sVoxel - bbox[0]
+                ) * torch.rand(3)
+                vol_pred = query(
+                    gaussians,
+                    tv_vol_center,
+                    tv_vol_nVoxel,
+                    tv_vol_sVoxel,
+                    pipe,
+                )["vol"]
+                loss_tv = tv_3d_loss(vol_pred, reduction="mean")
+                loss["tv"] = loss_tv
+                loss["total"] = loss["total"] + opt.lambda_tv * loss_tv
+
+        # sinograom loss
+        sinogram = True
+        if sinogram:
+            from pathlib import Path
+            interp_pred_root = Path("/home/maemaeko/imari_lab/r2_gaussian/data/synthetic_dataset/cone_ntrain_75_angle_360/aEupholus_A_CT_cone/proj_train_interp_epipolar")
+
+            def load_interp_pred(frame_index: int) -> torch.Tensor:
+                """保存済みの補間画像 pred を読み込んで torch.Tensor[1, H, W] で返す"""
+                p = interp_pred_root / f"proj_pred_{frame_index:04d}.npy"
+                arr = np.load(p).astype(np.float32)
+                ten = torch.from_numpy(arr)[None].cuda()  # [1,H,W] に合わせる（あなたのrender出力に合わせて次元は調整）
+                return ten
+
+            
+            lam_interp = 0.1  # 補間GTロスの重み（0.05〜0.2から開始がおすすめ）
+            # ---- 追加：補間GTとの L1 ----
+            # 例: viewpoint_cam.frame_index (0..74) が取れる場合
+            # 偶数でも奇数でも「補間版」を用意して比較したいなら常にOK。
+            # 奇数だけに限定したいなら: 
+            if frame_idx % 2 == 1: 
+                interp_gt = load_interp_pred(frame_idx)      # [1,H,W] を想定
+                loss_interp = l1_loss(image, interp_gt)      # 形状が合わない場合は squeeze/unsqueeze 調整
+
+                loss["interp"] = lam_interp * loss_interp
+                loss["total"] += loss["interp"]
+
+                # if opt.lambda_dssim > 0:
+                #     loss_dssim = 1.0 - ssim(image, interp_gt)
+                #     loss["dssim"] = loss_dssim
+                #     loss["total"] = loss["total"] + opt.lambda_dssim * loss_dssim
+
+
+
         # 3D depth loss
-        use_depth = True
+        use_depth = False
         if use_depth:
             # Randomly get the tiny volume center
             tv_vol_center = torch.tensor([0, 0, 0])
@@ -161,9 +196,46 @@ def training(
             )["vol"]
             #loss_tv = tv_3d_loss(vol_pred, reduction="mean")
             loss_depth = voxel_empty_loss(vol_pred) / 1000000
-            print(loss_depth)
             loss["tv"] = loss_tv
             loss["total"] = loss["total"] + opt.lambda_tv * loss_depth
+        
+        # scale entropy loss
+        use_scale_entropy = False # 全然よくない
+        if use_scale_entropy and iter > 10000:
+            densities = gaussians.get_density
+
+            scale_scalar = torch.max(densities, dim=1).values  # (N,)
+            eps = 1e-8
+            scale_scalar = torch.clamp(scale_scalar, min=eps)
+            # ヒストグラムをsoft binningで近似して、その分布のエントロピーを計算する
+            # バケット中心をあらかじめ決める
+            num_bins = 16
+            s_min = torch.min(scale_scalar).detach()
+            s_max = torch.max(scale_scalar).detach()
+            bin_centers = torch.linspace(s_min, s_max + eps, steps=num_bins, device=scale_scalar.device)
+
+            # 各点を各binに割り当てる確率 (Gaussian kernel でsoft assignment)
+            # これでone-hotの代わりにスムーズな分布にするから勾配が通る
+            bandwidth = 0.1 * (s_max - s_min + eps)  # カーネル幅
+            diff = scale_scalar[:, None] - bin_centers[None, :]          # (N, num_bins)
+            weights = torch.exp(-0.5 * (diff / (bandwidth + eps)) ** 2)  # Gaussian kernel
+            # 正規化: 各点の重みが1になるように
+            weights = weights / (torch.sum(weights, dim=1, keepdim=True) + eps)
+
+
+            # すべての点を足し合わせてヒストグラムっぽい分布に
+            hist = torch.sum(weights, dim=0)  # (num_bins,)
+            # 確率分布に正規化
+            p = hist / (torch.sum(hist) + eps)  # (num_bins,)
+
+            # 分布のエントロピー H = -Σ p log p
+            entropy = -torch.sum(p * torch.log(p + eps)) 
+            print(entropy)
+            loss_scale_entropy = entropy / 10000
+            loss["scale_entropy"] = loss_scale_entropy
+            loss["total"] = loss["total"] + opt.lambda_tv * loss_scale_entropy
+
+
 
         loss["total"].backward()
 
