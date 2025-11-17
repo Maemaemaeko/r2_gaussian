@@ -186,7 +186,7 @@ def training(
 
             # --- ここから可視化用 ---
             render_pkg = render(viewpoint_cam_angle_plus, gaussians, pipe)
-            image, viewspace_point_tensor, visibility_filter, radii = (
+            image, _, _, _ = (
                 render_pkg["render"],
                 render_pkg["viewspace_points"],
                 render_pkg["visibility_filter"],
@@ -234,8 +234,55 @@ def training(
             loss["total"] = loss["total"] + loss["param_smooth"]
 
 
+        symmetry_loss = True
+        # https://chatgpt.com/c/691ad40f-32e4-8324-97fe-a1b455f5d86f
+        if symmetry_loss and iteration < 10000:
+            curr_angle = float(viewpoint_cam.angle)  # 現在角度（rad）
+            
+            dtheta = math.radians(180)  # 1° = π/180 rad
+            flip_angle = (curr_angle + dtheta) % (2 * math.pi)
+
+            # CT 'transform_matrix' is a camera-to-world transform
+            c2w = angle2pose(5, flip_angle)  # c2w
+            # get the world-to-camera transform and set R, T
+            w2c = np.linalg.inv(c2w)
+            R = np.transpose(
+                w2c[:3, :3]
+            )  # R is stored transposed due to 'glm' in CUDA code
+            T = w2c[:3, 3]
+
+            viewpoint_cam_angle_flip = Camera(
+                colmap_id=viewpoint_cam.colmap_id,
+                scanner_cfg=None,
+                R=R,
+                T=T,
+                angle=angle_plus,
+                mode=viewpoint_cam.mode,
+                FoVx=viewpoint_cam.FoVx,
+                FoVy=viewpoint_cam.FoVy,
+                image=torch.zeros((1, 512, 512)),
+                image_name="none",
+                uid=1,
+            )
+
+            # --- ここから可視化用 ---
+            render_pkg = render(viewpoint_cam_angle_flip, gaussians, pipe)
+            image, _, _, _ = (
+                render_pkg["render"],
+                render_pkg["viewspace_points"],
+                render_pkg["visibility_filter"],
+                render_pkg["radii"],
+            )
+            img_plus = render_pkg["render"][0].detach().cpu().numpy()
+            # X線なら [1,1,H,W] or [1,H,W,1] の可能性があるので squeeze
+            img_plus = np.squeeze(img_plus)
 
 
+            img_theta_flipped = torch.flip(image, dims=[-1])
+
+            loss["symmetry"] = l1_loss(img_theta_flipped, gt_image)
+            loss["total"] = loss["total"] + loss["symmetry"] * 0.1
+        
 
         # sinograom loss
         sinogram = False
