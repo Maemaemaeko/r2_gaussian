@@ -26,9 +26,13 @@ from r2_gaussian.utils.general_utils import safe_state
 from r2_gaussian.utils.cfg_utils import load_config
 from r2_gaussian.utils.log_utils import prepare_output_and_logger
 from r2_gaussian.dataset import Scene
-from r2_gaussian.utils.loss_utils import l1_loss, ssim, tv_3d_loss, voxel_empty_loss
+from r2_gaussian.dataset.cameras import Camera
+from r2_gaussian.dataset.dataset_readers import angle2pose
+
+from r2_gaussian.utils.loss_utils import l1_loss, ssim, tv_3d_loss, voxel_empty_loss, smoothness_loss_knn
 from r2_gaussian.utils.image_utils import metric_vol, metric_proj
 from r2_gaussian.utils.plot_utils import show_two_slice
+
 
 
 def training(
@@ -119,8 +123,8 @@ def training(
         frame_idx = int(viewpoint_cam.uid)
 
         loss = {"total": 0.0}
-        if frame_idx % 2 == 0:
-        #if True:
+        #if frame_idx % 2 == 0:
+        if True:
             render_loss = l1_loss(image, gt_image)
             loss["render"] = render_loss
             loss["total"] += loss["render"]
@@ -144,12 +148,102 @@ def training(
                 loss_tv = tv_3d_loss(vol_pred, reduction="mean")
                 loss["tv"] = loss_tv
                 loss["total"] = loss["total"] + opt.lambda_tv * loss_tv
+        
+        # smoothness loss
+        smoothness = True
+        if smoothness:
+            import math
+            import matplotlib.pyplot as plt
+    
+            curr_angle = float(viewpoint_cam.angle)  # 現在角度（rad）
+            
+            dtheta = math.radians(1.0)  # 1° = π/180 rad
+            angle_minus = (curr_angle - dtheta) % (2 * math.pi)
+            angle_plus  = (curr_angle + dtheta) % (2 * math.pi)
+
+            # CT 'transform_matrix' is a camera-to-world transform
+            c2w = angle2pose(5, angle_plus)  # c2w
+            # get the world-to-camera transform and set R, T
+            w2c = np.linalg.inv(c2w)
+            R = np.transpose(
+                w2c[:3, :3]
+            )  # R is stored transposed due to 'glm' in CUDA code
+            T = w2c[:3, 3]
+
+            viewpoint_cam_angle_plus = Camera(
+                colmap_id=viewpoint_cam.colmap_id,
+                scanner_cfg=None,
+                R=R,
+                T=T,
+                angle=angle_plus,
+                mode=viewpoint_cam.mode,
+                FoVx=viewpoint_cam.FoVx,
+                FoVy=viewpoint_cam.FoVy,
+                image=torch.zeros((1, 512, 512)),
+                image_name="none",
+                uid=1,
+            )
+
+            # --- ここから可視化用 ---
+            render_pkg = render(viewpoint_cam_angle_plus, gaussians, pipe)
+            image, viewspace_point_tensor, visibility_filter, radii = (
+                render_pkg["render"],
+                render_pkg["viewspace_points"],
+                render_pkg["visibility_filter"],
+                render_pkg["radii"],
+            )
+            img_plus = render_pkg["render"][0].detach().cpu().numpy()
+            # X線なら [1,1,H,W] or [1,H,W,1] の可能性があるので squeeze
+            img_plus = np.squeeze(img_plus)
+
+
+            loss["angle_smoothnses"] = l1_loss(image, gt_image)
+            loss["total"] += loss["angle_smoothnses"] * 0.01
+
+
+            # ================================
+            # iteration 100毎に PNG 保存
+            # ================================
+            # if iteration % 100 == 0:
+            #     smooth_save_path = osp.join(scene.model_path, "smooth")
+            #     os.makedirs(smooth_save_path, exist_ok=True)
+
+            #     out_path = osp.join(smooth_save_path, f"iter_{iteration:06d}_angle_plus.png")
+            #     plt.imsave(out_path, img_plus, cmap="gray")
+
+            #     # ログ
+            #     print(f"[iter {iteration}] Saved:", out_path)
+        
+        # localization loss
+        # https://chatgpt.com/s/t_691ad54ee9008191926ae297404dd944
+        gaussian_localization = False
+        if gaussian_localization:
+            xyz     = gaussians.get_xyz[:, :3]
+            scales  = gaussians.get_scaling[:, :3]
+            opacity = gaussians.get_density[:, None]  # (N, 1)
+
+            theta = torch.cat([opacity, scales], dim=-1)
+
+            param_smooth = smoothness_loss_knn(
+                xyz=xyz,
+                theta=theta,
+                k=8,
+                sigma=0.02,  # シーンスケールに合わせて調整
+            )
+
+            lambda_smooth = 0.01  # ハイパーパラメータ
+            loss["param_smooth"] = param_smooth * lambda_smooth
+            loss["total"] = loss["total"] + loss["param_smooth"]
+
+
+
+
 
         # sinograom loss
-        sinogram = True
+        sinogram = False
         if sinogram:
             from pathlib import Path
-            interp_pred_root = Path("/home/maemaeko/imari_lab/r2_gaussian/data/synthetic_dataset/cone_ntrain_75_angle_360/aEupholus_A_CT_cone/proj_train_interp_epipolar")
+            interp_pred_root = Path("/home/maemaeko/imari_lab/r2_gaussian/data/synthetic_dataset/cone_ntrain_38_angle_360/1_pepper_cone/proj_train_interp_epipolar")
 
             def load_interp_pred(frame_index: int) -> torch.Tensor:
                 """保存済みの補間画像 pred を読み込んで torch.Tensor[1, H, W] で返す"""
@@ -164,7 +258,7 @@ def training(
             # 例: viewpoint_cam.frame_index (0..74) が取れる場合
             # 偶数でも奇数でも「補間版」を用意して比較したいなら常にOK。
             # 奇数だけに限定したいなら: 
-            if frame_idx % 2 == 1: 
+            if frame_idx % 2 == 1:
                 interp_gt = load_interp_pred(frame_idx)      # [1,H,W] を想定
                 loss_interp = l1_loss(image, interp_gt)      # 形状が合わない場合は squeeze/unsqueeze 調整
 
@@ -172,9 +266,9 @@ def training(
                 loss["total"] += loss["interp"]
 
                 # if opt.lambda_dssim > 0:
-                #     loss_dssim = 1.0 - ssim(image, interp_gt)
-                #     loss["dssim"] = loss_dssim
-                #     loss["total"] = loss["total"] + opt.lambda_dssim * loss_dssim
+                # loss_dssim = 1.0 - ssim(image, interp_gt)
+                # loss["dssim"] = loss_dssim
+                # loss["total"] = loss["total"] + opt.lambda_dssim * loss_dssim
 
 
 
