@@ -39,6 +39,63 @@ def voxel_empty_loss(vol):
     return loss
     
 
+def smoothness_loss_knn(
+    xyz,
+    theta,
+    num_centers=5000,  # loss 計算に使う Gaussians の数
+    k=8,
+    M=64,
+    sigma=0.03,
+):
+    """
+    xyz:   (N, 3)
+    theta: (N, D)
+    num_centers: smoothness の中心にする点の数（N からランダムサンプリング）
+    k:     その中で最も近い近傍数
+    M:     各 center あたりの候補点数（M >> k）
+    """
+    N = xyz.shape[0]
+    device = xyz.device
+
+    # N が小さいときは、そのまま全点で計算
+    if N <= num_centers:
+        num_centers = N
+
+    # ---- 1) center となる点をランダムサンプリング ----
+    # shape: (num_centers,)
+    center_idx = torch.randperm(N, device=device)[:num_centers]
+    center_xyz = xyz[center_idx]      # (num_centers, 3)
+    center_theta = theta[center_idx]  # (num_centers, D)
+
+    # ---- 2) 各 center に対して、ランダム候補 M 個を全体 N から選ぶ ----
+    # shape: (num_centers, M)
+    rand_idx = torch.randint(0, N, (num_centers, M), device=device)
+
+    # ---- 3) 距離を計算 ----
+    pts_i = center_xyz.unsqueeze(1)    # (num_centers, 1, 3)
+    pts_j = xyz[rand_idx]              # (num_centers, M, 3)
+    dists = (pts_i - pts_j).norm(dim=-1)  # (num_centers, M)
+
+    # 自分自身を候補から消したい場合（オプション）
+    # 同じ index が入っているとき、距離を大きくして弾く
+    self_mask = (rand_idx == center_idx.unsqueeze(1))  # (num_centers, M)
+    dists = dists + self_mask * 1e6
+
+    # ---- 4) 一番近い k 個を選ぶ ----
+    knn_dists, knn_local_idx = torch.topk(dists, k, dim=-1, largest=False)  # (num_centers, k)
+    knn_idx = torch.gather(rand_idx, 1, knn_local_idx)                      # (num_centers, k)
+
+    # ---- 5) theta の差分 ----
+    theta_i = center_theta.unsqueeze(1)     # (num_centers, 1, D)
+    theta_j = theta[knn_idx]               # (num_centers, k, D)
+    diff = theta_i - theta_j               # (num_centers, k, D)
+    sq = (diff * diff).sum(dim=-1)         # (num_centers, k)
+
+    # ---- 6) 距離重みつき平均 ----
+    weights = torch.exp(-(knn_dists ** 2) / (sigma ** 2))  # (num_centers, k)
+    loss = (weights * sq).mean()
+    return loss
+
 
 def l1_loss(network_output, gt):
     return torch.abs((network_output - gt)).mean()

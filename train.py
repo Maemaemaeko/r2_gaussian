@@ -29,7 +29,7 @@ from r2_gaussian.dataset import Scene
 from r2_gaussian.dataset.cameras import Camera
 from r2_gaussian.dataset.dataset_readers import angle2pose
 
-from r2_gaussian.utils.loss_utils import l1_loss, ssim, tv_3d_loss, voxel_empty_loss, smoothness_loss_knn
+from r2_gaussian.utils.loss_utils import l1_loss, l2_loss, ssim, tv_3d_loss, voxel_empty_loss, smoothness_loss_knn
 from r2_gaussian.utils.image_utils import metric_vol, metric_proj
 from r2_gaussian.utils.plot_utils import show_two_slice
 
@@ -216,22 +216,20 @@ def training(
         
         # localization loss
         # https://chatgpt.com/s/t_691ad54ee9008191926ae297404dd944
-        gaussian_localization = False
+        gaussian_localization = True
         if gaussian_localization:
             xyz     = gaussians.get_xyz[:, :3]
             scales  = gaussians.get_scaling[:, :3]
-            opacity = gaussians.get_density[:, None]  # (N, 1)
-
+            opacity = gaussians.get_density[:, 0]
+            opacity = opacity.view(opacity.shape[0], -1)  # (N,1)
             theta = torch.cat([opacity, scales], dim=-1)
 
             param_smooth = smoothness_loss_knn(
                 xyz=xyz,
                 theta=theta,
-                k=8,
-                sigma=0.02,  # シーンスケールに合わせて調整
             )
 
-            lambda_smooth = 0.01  # ハイパーパラメータ
+            lambda_smooth = 10000  # ハイパーパラメータ
             loss["param_smooth"] = param_smooth * lambda_smooth
             loss["total"] = loss["total"] + loss["param_smooth"]
 
