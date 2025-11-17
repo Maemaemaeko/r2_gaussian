@@ -7,7 +7,7 @@ from skimage.metrics import structural_similarity as ssim
 import csv
 
 # ==== 入力/出力パス ====
-base_dir = Path("/home/maemaeko/imari_lab/r2_gaussian/data/synthetic_dataset/cone_ntrain_75_angle_360/aEupholus_A_CT_cone/proj_train")
+base_dir = Path("/home/maemaeko/imari_lab/r2_gaussian/data/synthetic_dataset/cone_ntrain_75_angle_360/1_pepper_cone/proj_train")
 out_root = base_dir.parent / "proj_train_interp_full"
 (out_root / "pred").mkdir(parents=True, exist_ok=True)
 (out_root / "gt").mkdir(parents=True, exist_ok=True)

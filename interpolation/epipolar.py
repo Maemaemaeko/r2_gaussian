@@ -189,7 +189,7 @@ def evaluate_against_gt(out_dir, gt_dir, prefix="proj_train"):
     gt_dir  = Path(gt_dir)
 
     # 出力側の連番（存在するものだけ評価）
-    out_npys = sorted(out_dir.glob(f"{prefix}_*.npy"))
+    out_npys = sorted(out_dir.glob(f"proj_pred_*.npy"))
     if len(out_npys) == 0:
         print("⚠️ 評価対象が見つかりません。まず出力を生成してください。")
         return
@@ -260,6 +260,6 @@ if __name__ == "__main__":
     interpolate_sequence_npy(args.in_dir, args.out_dir, prefix=args.prefix)
 
     if args.gt_dir is not None:
-        evaluate_against_gt(args.out_dir, args.gt_dir, prefix=args.prefix)
+        evaluate_against_gt(args.out_dir, args.gt_dir)
 
 
