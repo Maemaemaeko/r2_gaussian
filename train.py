@@ -153,52 +153,48 @@ def training(
         smoothness = True
         if smoothness:
             import math
-            import matplotlib.pyplot as plt
-    
+
             curr_angle = float(viewpoint_cam.angle)  # 現在角度（rad）
-            
-            dtheta = math.radians(1.0)  # 1° = π/180 rad
-            angle_minus = (curr_angle - dtheta) % (2 * math.pi)
-            angle_plus  = (curr_angle + dtheta) % (2 * math.pi)
+            dtheta = math.radians(1.0)               # 1°
 
-            # CT 'transform_matrix' is a camera-to-world transform
-            c2w = angle2pose(5, angle_plus)  # c2w
-            # get the world-to-camera transform and set R, T
-            w2c = np.linalg.inv(c2w)
-            R = np.transpose(
-                w2c[:3, :3]
-            )  # R is stored transposed due to 'glm' in CUDA code
-            T = w2c[:3, 3]
+            angles = [curr_angle + dtheta]
+            angle_loss = 0.0
 
-            viewpoint_cam_angle_plus = Camera(
-                colmap_id=viewpoint_cam.colmap_id,
-                scanner_cfg=None,
-                R=R,
-                T=T,
-                angle=angle_plus,
-                mode=viewpoint_cam.mode,
-                FoVx=viewpoint_cam.FoVx,
-                FoVy=viewpoint_cam.FoVy,
-                image=torch.zeros((1, 512, 512)),
-                image_name="none",
-                uid=1,
-            )
+            for a in angles:
+                angle_mod = a % (2 * math.pi)
 
-            # --- ここから可視化用 ---
-            render_pkg = render(viewpoint_cam_angle_plus, gaussians, pipe)
-            image, _, _, _ = (
-                render_pkg["render"],
-                render_pkg["viewspace_points"],
-                render_pkg["visibility_filter"],
-                render_pkg["radii"],
-            )
-            img_plus = render_pkg["render"][0].detach().cpu().numpy()
-            # X線なら [1,1,H,W] or [1,H,W,1] の可能性があるので squeeze
-            img_plus = np.squeeze(img_plus)
+                c2w = angle2pose(5, angle_mod)
+                w2c = np.linalg.inv(c2w)
+                R = np.transpose(w2c[:3, :3]) # CUDA 都合で転置
+                T = w2c[:3, 3]
 
+                viewpoint_cam_shift = Camera(
+                    colmap_id=viewpoint_cam.colmap_id,
+                    scanner_cfg=None,
+                    R=R,
+                    T=T,
+                    angle=angle_mod,
+                    mode=viewpoint_cam.mode,
+                    FoVx=viewpoint_cam.FoVx,
+                    FoVy=viewpoint_cam.FoVy,
+                    image=torch.zeros((1, 512, 512)),
+                    image_name="none",
+                    uid=1,
+                )
 
-            loss["angle_smoothnses"] = l1_loss(image, gt_image)
-            loss["total"] += loss["angle_smoothnses"] * 0.01
+                render_pkg = render(viewpoint_cam_shift, gaussians, pipe)
+                img_shift, _, _, _ = (
+                    render_pkg["render"],
+                    render_pkg["viewspace_points"],
+                    render_pkg["visibility_filter"],
+                    render_pkg["radii"],
+                )
+
+                angle_loss += l1_loss(img_shift, gt_image)  # L1 loss 加算
+
+            lambda_angle = 0.1  # 重みは調整可能（→ 例: 0.005 × 2）
+            loss["angle_smoothness"] = angle_loss * lambda_angle
+            loss["total"] += loss["angle_smoothness"]
 
 
             # ================================
@@ -216,25 +212,49 @@ def training(
         
         # localization loss
         # https://chatgpt.com/s/t_691ad54ee9008191926ae297404dd944
-        gaussian_localization = True
+        gaussian_localization = False
+        # 細部の構造が失われないよう
         if gaussian_localization:
             xyz     = gaussians.get_xyz[:, :3]
             scales  = gaussians.get_scaling[:, :3]
             opacity = gaussians.get_density[:, 0]
             opacity = opacity.view(opacity.shape[0], -1)  # (N,1)
-            theta = torch.cat([opacity, scales], dim=-1)
+            theta = torch.cat([opacity], dim=-1)
 
             param_smooth = smoothness_loss_knn(
                 xyz=xyz,
                 theta=theta,
             )
 
-            lambda_smooth = 10000  # ハイパーパラメータ
+            # lambda_smooth = 10000  # ハイパーパラメータ
+            # loss["param_smooth"] = param_smooth * lambda_smooth
+            # loss["total"] = loss["total"] + loss["param_smooth"]
+
+
+            base_total = loss["total"].detach()
+            # 「smoothness を total の何割くらいにしたいか」
+            target_ratio = 0.1  # 例: 全体の 20% くらいの寄与にしたい
+
+            # lambda_smooth を loss スケールから自動決定
+            with torch.no_grad():
+                ps = param_smooth.detach()
+                if ps > 0:
+                    raw_lambda = target_ratio * base_total / (ps + 1e-8)
+                else:
+                    raw_lambda = torch.tensor(0.0, device=param_smooth.device)
+
+                # 極端な値はクリップ（必要に応じて調整）
+                min_lambda = 1e-4
+                max_lambda = 1e4
+                raw_lambda = torch.clamp(raw_lambda, min_lambda, max_lambda)
+
+            lambda_smooth = raw_lambda  # tensor のままで OK
+
             loss["param_smooth"] = param_smooth * lambda_smooth
             loss["total"] = loss["total"] + loss["param_smooth"]
 
 
-        symmetry_loss = True
+        symmetry_loss =False
         # https://chatgpt.com/c/691ad40f-32e4-8324-97fe-a1b455f5d86f
         if symmetry_loss and iteration < 10000:
             curr_angle = float(viewpoint_cam.angle)  # 現在角度（rad）
@@ -256,7 +276,7 @@ def training(
                 scanner_cfg=None,
                 R=R,
                 T=T,
-                angle=angle_plus,
+                angle=flip_angle,
                 mode=viewpoint_cam.mode,
                 FoVx=viewpoint_cam.FoVx,
                 FoVy=viewpoint_cam.FoVy,
