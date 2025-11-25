@@ -29,7 +29,7 @@ from r2_gaussian.dataset import Scene
 from r2_gaussian.dataset.cameras import Camera
 from r2_gaussian.dataset.dataset_readers import angle2pose
 
-from r2_gaussian.utils.loss_utils import l1_loss, l2_loss, ssim, tv_3d_loss, voxel_empty_loss, smoothness_loss_knn
+from r2_gaussian.utils.loss_utils import ecc_loss_for_pair, l1_loss, l2_loss, ssim, tv_3d_loss, voxel_empty_loss, smoothness_loss_knn
 from r2_gaussian.utils.image_utils import metric_vol, metric_proj
 from r2_gaussian.utils.plot_utils import show_two_slice
 
@@ -150,7 +150,7 @@ def training(
                 loss["total"] = loss["total"] + opt.lambda_tv * loss_tv
         
         # smoothness loss
-        smoothness = True
+        smoothness = False
         if smoothness:
             import math
             import matplotlib.pyplot as plt
@@ -263,6 +263,68 @@ def training(
             loss["param_smooth"] = param_smooth * lambda_smooth
             loss["total"] = loss["total"] + loss["param_smooth"]
 
+
+        # ecc_loss_for_pair
+        ecc_loss = True
+        if ecc_loss:
+            import math
+            import matplotlib.pyplot as plt
+            curr_angle = float(viewpoint_cam.angle)  # 現在角度（rad）
+            K = viewpoint_cam.projection_matrix[:3, :3]
+            
+            dtheta = math.radians(1.0)  # 1° = π/180 rad
+            angle_plus  = (curr_angle + dtheta) % (2 * math.pi)
+
+
+            angles = [angle_plus]
+            angle_loss = 0.0
+
+            # CT 'transform_matrix' is a camera-to-world transform
+
+            for angle_plus in angles:
+                c2w = angle2pose(5, angle_plus)  # c2w
+                # get the world-to-camera transform and set R, T
+                w2c = np.linalg.inv(c2w)
+                R = np.transpose(
+                    w2c[:3, :3]
+                )  # R is stored transposed due to 'glm' in CUDA code
+                T = w2c[:3, 3]
+
+                viewpoint_cam_angle_plus = Camera(
+                    colmap_id=viewpoint_cam.colmap_id,
+                    scanner_cfg=None,
+                    R=R,
+                    T=T,
+                    angle=angle_plus,
+                    mode=viewpoint_cam.mode,
+                    FoVx=viewpoint_cam.FoVx,
+                    FoVy=viewpoint_cam.FoVy,
+                    image=torch.zeros((1, 512, 512)),
+                    image_name="none",
+                    uid=1,
+                )
+
+                # --- ここから可視化用 ---
+                render_pkg = render(viewpoint_cam_angle_plus, gaussians, pipe)
+                image_shift, _, _, _ = (
+                    render_pkg["render"],
+                    render_pkg["viewspace_points"],
+                    render_pkg["visibility_filter"],
+                    render_pkg["radii"],
+                )
+                ecc_loss_value = ecc_loss_for_pair(
+                    img0=gt_image,
+                    img1=image_shift,
+                    P0=viewpoint_cam.world_view_transform, # w2c
+                    P1=viewpoint_cam_angle_plus.world_view_transform, # w2c 
+                    K = viewpoint_cam.projection_matrix,
+                    c0=viewpoint_cam.camera_center,
+                    c1=viewpoint_cam_angle_plus.camera_center,
+                    points3d=torch.zeros((3,), device=gt_image.device),  # ダミー
+                )
+                #print("ecc_loss_value:", ecc_loss_value.item())
+                loss["ecc_loss"] = ecc_loss_value 
+                loss["total"] += loss["ecc_loss"]
 
         symmetry_loss =False
         # https://chatgpt.com/c/691ad40f-32e4-8324-97fe-a1b455f5d86f

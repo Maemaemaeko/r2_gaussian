@@ -125,31 +125,69 @@ def plane_from_phi_np(phi: float, c0: np.ndarray, e_b: np.ndarray,
     return n, d
 
 
-def plane_points_on_Ephi_np(n: np.ndarray, obj_center: np.ndarray,
-                            e_b: np.ndarray, L: float):#> Tuple[np.ndarray, np.ndarray]:
+# def plane_points_on_Ephi_np(
+#     n: np.ndarray,
+#     obj_center: np.ndarray,
+#     e_b: np.ndarray,
+#     L: float,
+# ) -> Tuple[np.ndarray, np.ndarray]:
+#     """
+#     エピポーラ平面 E_phi 上の 2 点 X1, X2 を返す。
+
+#     Parameters
+#     ----------
+#     n : (3,) np.ndarray
+#         エピポーラ平面の法線ベクトル（単位ベクトルを想定）
+#     obj_center : (3,) np.ndarray
+#         原点として使う平面上の点（例: ボリューム中心）
+#     e_b : (3,) np.ndarray
+#         ベースラインの単位ベクトル（c0→c1 方向など）
+#     L : float
+#         平面内にとる線分の長さ（world座標系のスケール）
+
+#     Returns
+#     -------
+#     X1, X2 : (3,) np.ndarray
+#         X1 = obj_center
+#         X2 = obj_center + L * t （t は平面内の単位ベクトル）
+#     """
+#     n = np.asarray(n, dtype=np.float64)
+#     obj_center = np.asarray(obj_center, dtype=np.float64)
+#     e_b = np.asarray(e_b, dtype=np.float64)
+
+#     # 平面内の方向ベクトル t = n × e_b
+#     t = np.cross(n, e_b)
+#     t_norm = np.linalg.norm(t) 
+
+#     if t_norm < 1e-8:
+#         # n と e_b がほぼ平行 → 平面の定義が壊れるので、obj_center を2点返しておく
+#         X1 = obj_center.copy()
+#         X2 = obj_center.copy()
+#         return X1, X2
+
+#     t = t / t_norm  # 正規化（単位ベクトル）
+
+#     X1 = obj_center.copy()
+#     X2 = obj_center + L * t
+
+#     return X1, X2
+
+
+def plane_points_on_Ephi_np(n: torch.Tensor, c0: torch.Tensor, c1: torch.Tensor, L: float = 200.0):
     """
-    n: (3,) plane normal (unit)
-    obj_center: (3,) object center (world origin)
-    e_b: (3,) baseline unit vector
-    L: scale
-    Returns:
-        X1: obj_center
-        X2: obj_center + L * direction_in_plane
+    n:  plane normal (3,)
+    c0: source of view 0 (3,)
+    c1: source of view 1 (3,)
+    L:  スケール [mm] など
     """
-    # 平面内の方向 t = n × e_b
-    # t = np.cross(n, e_b)
-    # t_norm = np.linalg.norm(t)
-    # if t_norm < 1e-8:
-    #     # e_b が n と平行だと平面が定義できないため、
-    #     # 平面内の任意の直交ベクトルを返す形で fallback
-    #     return obj_center.copy(), obj_center.copy()
-    
-    # t = t / t_norm  # 正規化
-    
-    X1 = obj_center.copy()          # 原点（=中心）
-    X2 = obj_center + L * e_b     # 平面内方向の1点
-    
-    return X1, X2
+    b = c1 - c0
+    e_b = b / torch.norm(b)
+    t = torch.cross(n, e_b)
+    t = t / torch.norm(t)
+
+    X1 = c0 + L * t
+    X2 = c0 + L * (t + e_b)
+    return X1, X2  # (3,), (3,)
 
 def create_plane_patch(point: np.ndarray, normal: np.ndarray,
                        e_b: np.ndarray, size: float,
@@ -562,7 +600,7 @@ def main(dataset: ModelParams, args):
     if len(cam_centers) >= 2:
         # ここでは例として 0番目 と n_proj//8 番目のカメラを使う
         idx0 = 0
-        idx1 = 1 #max(1, n_proj // 2)
+        idx1 = max(1, n_proj // 8)
 
         c0 = np.array(cam_centers[idx0])
         c1 = np.array(cam_centers[idx1])
@@ -623,7 +661,13 @@ def main(dataset: ModelParams, args):
         # L はオブジェクトサイズに応じたスケールで決める
         L_for_X = 0.5 * max_extent  # 体積サイズの半分くらい
 
-        X1, X2 = plane_points_on_Ephi_np(n0, obj_center, eb, L=L_for_X)
+        #X1, X2 = plane_points_on_Ephi_np(n0, obj_center, eb, L=L_for_X)
+        X1, X2 = plane_points_on_Ephi_np(
+            torch.from_numpy(n0).float(),
+            torch.from_numpy(c0).float(),
+            torch.from_numpy(c1).float(),
+            L=L_for_X,
+        )
 
 
         # X1, X2をカメラ座標系に投影
@@ -642,7 +686,7 @@ def main(dataset: ModelParams, args):
                 q1=q1,
                 q2=q2,
                 Ns=64,
-                eps=1.0,
+                eps=2.0,
             )
             # proj_images[idx0] に線分 q1-q2 を描画
             if q1 is not None and q2 is not None:
@@ -677,7 +721,7 @@ def main(dataset: ModelParams, args):
                 q1=q1,
                 q2=q2,
                 Ns=64,
-                eps=1.0,
+                eps=2.0,
             )
             # proj_images[idx0] に線分 q1-q2 を描画
             if q1 is not None and q2 is not None:

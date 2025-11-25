@@ -9,11 +9,20 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+import math
 import torch
 import torch.nn.functional as F
 from torch.autograd import Variable
 from math import exp
 import torch.nn as nn
+
+from r2_gaussian.utils.epinaf_loss import (
+    plane_points_on_Ephi,
+    epipolar_line_on_view,
+    clip_line_to_image,
+    sample_points_on_segment,
+    compute_normal_derivative,
+)
 
 
 def tv_3d_loss(vol, reduction="sum"):
@@ -97,6 +106,99 @@ def smoothness_loss_knn(
     return loss
 
 
+def ecc_loss_for_pair(
+    img0: torch.Tensor, img1: torch.Tensor,
+    P0: torch.Tensor, P1: torch.Tensor, # 
+    K: torch.Tensor,
+    c0: torch.Tensor, c1: torch.Tensor,
+    points3d: torch.Tensor,
+    Ns: int = 256,
+    L_world: float = 200.0,
+    eps_normal: float = 1.0,
+) -> torch.Tensor:
+    """
+    Epi-NAF風 Epipolar Consistency Loss for one pair of views.
+
+    img0, img1: (1,1,H,W) or (H,W) predicted projections (cos-weighting なし版)
+    P0, P1: (3,4) projection matrices
+    num_planes: number of epipolar planes (stochastic approx)
+    Ns: number of samples per epipolar line
+    Returns:
+        loss: scalar tensor
+    """
+    device = img0.device
+    dtype = img0.dtype
+
+    # cast shapes
+    if img0.dim() == 2:
+        H, W = img0.shape
+    else:
+        H, W = img0.shape[-2], img0.shape[-1]
+
+
+    e_b = c1 - c0  # baseline vector
+    e_b = e_b / torch.norm(e_b)
+
+    # φ を 0..π から num_planes 個サンプル
+    #phis = torch.linspace(0.0, math.pi, steps=num_planes, device=device, dtype=dtype)
+
+    # Compute plane normal for plane through c0, c1 and points3d using torch
+    # Ensure tensors are on same device/dtype
+    v1 = (c1 - c0).to(device=device, dtype=dtype)
+    v2 = (points3d - c0).to(device=device, dtype=dtype)
+    n0 = torch.cross(v1, v2)
+    n0 = n0 / (n0.norm() + 1e-8)
+
+
+    # 平面上の2点
+    X1, X2 = plane_points_on_Ephi(n0, c0, c1, L=L_world)
+
+    # 各ビューでエピポーラ線
+    l0 = epipolar_line_on_view(P0.to(device=device, dtype=dtype), K, X1, X2)
+    l1 = epipolar_line_on_view(P1.to(device=device, dtype=dtype), K, X1, X2)
+
+    # 各画像内で線分をクリップ
+    p0_start, p0_end = clip_line_to_image(l0, H, W)
+    p1_start, p1_end = clip_line_to_image(l1, H, W)
+
+    if p0_start is None or p1_start is None:
+        # 画像内にほぼ通っていない
+        return torch.tensor(0.0, device=device, dtype=dtype)
+
+    # 各線分上を Ns点サンプル
+    us0, vs0, delta0 = sample_points_on_segment(p0_start, p0_end, Ns)
+    us1, vs1, delta1 = sample_points_on_segment(p1_start, p1_end, Ns)
+
+    # 法線方向微分
+    d0 = compute_normal_derivative(img0, us0, vs0, l0, eps=eps_normal)  # (Ns,)
+
+    d1 = compute_normal_derivative(img1, us1, vs1, l1, eps=eps_normal)  # (Ns,)
+
+
+    loss = l1_loss(d0, d1)
+    import numpy as np
+    d0 = d0.detach().cpu().numpy()
+    d1 = d1.detach().cpu().numpy()
+    import matplotlib.pyplot as plt
+    plt.plot(d0)
+    plt.plot(d1)
+    plt.title("Normal Direction Derivatives along Epipolar Line")
+    plt.xlabel("Sample Index along Line")
+    plt.ylabel("dI/dn")
+    plt.legend()
+    plt.show()
+        
+
+
+    # # ∑ Δ_j δ の形に近づける
+    # S0 = d0 * delta0
+    # S1 = d1 * delta1
+
+    # # Epi-NAF の Eq.(4) 的な残差
+    # residual = S0.sum() - S1.sum()  # scalar
+
+    
+    return loss
 
 
 
