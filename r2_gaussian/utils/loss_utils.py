@@ -42,9 +42,9 @@ def voxel_empty_loss(vol):
 def smoothness_loss_knn(
     xyz,
     theta,
-    num_centers=5000,  # loss 計算に使う Gaussians の数
+    num_centers=1000,  # loss 計算に使う Gaussians の数
     k=8,
-    M=64,
+    M=320,
     sigma=0.03,
 ):
     """
@@ -95,6 +95,9 @@ def smoothness_loss_knn(
     weights = torch.exp(-(knn_dists ** 2) / (sigma ** 2))  # (num_centers, k)
     loss = (weights * sq).mean()
     return loss
+
+
+
 
 
 def l1_loss(network_output, gt):

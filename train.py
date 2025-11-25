@@ -153,27 +153,35 @@ def training(
         smoothness = True
         if smoothness:
             import math
-
+            import matplotlib.pyplot as plt
+    
             curr_angle = float(viewpoint_cam.angle)  # 現在角度（rad）
-            dtheta = math.radians(1.0)               # 1°
+            
+            dtheta = math.radians(1.0)  # 1° = π/180 rad
+            angle_minus = (curr_angle - dtheta) % (2 * math.pi)
+            angle_plus  = (curr_angle + dtheta) % (2 * math.pi)
 
-            angles = [curr_angle + dtheta]
+
+            angles = [angle_plus]
             angle_loss = 0.0
 
-            for a in angles:
-                angle_mod = a % (2 * math.pi)
+            # CT 'transform_matrix' is a camera-to-world transform
 
-                c2w = angle2pose(5, angle_mod)
+            for angle_plus in angles:
+                c2w = angle2pose(5, angle_plus)  # c2w
+                # get the world-to-camera transform and set R, T
                 w2c = np.linalg.inv(c2w)
-                R = np.transpose(w2c[:3, :3]) # CUDA 都合で転置
+                R = np.transpose(
+                    w2c[:3, :3]
+                )  # R is stored transposed due to 'glm' in CUDA code
                 T = w2c[:3, 3]
 
-                viewpoint_cam_shift = Camera(
+                viewpoint_cam_angle_plus = Camera(
                     colmap_id=viewpoint_cam.colmap_id,
                     scanner_cfg=None,
                     R=R,
                     T=T,
-                    angle=angle_mod,
+                    angle=angle_plus,
                     mode=viewpoint_cam.mode,
                     FoVx=viewpoint_cam.FoVx,
                     FoVy=viewpoint_cam.FoVy,
@@ -182,19 +190,21 @@ def training(
                     uid=1,
                 )
 
-                render_pkg = render(viewpoint_cam_shift, gaussians, pipe)
-                img_shift, _, _, _ = (
+                # --- ここから可視化用 ---
+                render_pkg = render(viewpoint_cam_angle_plus, gaussians, pipe)
+                image_shift, viewspace_point_tensor, visibility_filter, radii = (
                     render_pkg["render"],
                     render_pkg["viewspace_points"],
                     render_pkg["visibility_filter"],
                     render_pkg["radii"],
                 )
 
-                angle_loss += l1_loss(img_shift, gt_image)  # L1 loss 加算
+                angle_loss += l1_loss(image_shift, gt_image) * 0.01
 
-            lambda_angle = 0.1  # 重みは調整可能（→ 例: 0.005 × 2）
-            loss["angle_smoothness"] = angle_loss * lambda_angle
-            loss["total"] += loss["angle_smoothness"]
+            loss["angle_smoothnses"] = angle_loss
+            loss["total"] += loss["angle_smoothnses"] 
+
+
 
 
             # ================================
