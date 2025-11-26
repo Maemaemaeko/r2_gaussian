@@ -22,7 +22,7 @@ import yaml
 sys.path.append("./")
 from r2_gaussian.arguments import ModelParams, OptimizationParams, PipelineParams
 from r2_gaussian.gaussian import GaussianModel, render, query, initialize_gaussian, query_masked
-from r2_gaussian.utils.general_utils import safe_state
+from r2_gaussian.utils.general_utils import safe_state, t2a
 from r2_gaussian.utils.cfg_utils import load_config
 from r2_gaussian.utils.log_utils import prepare_output_and_logger
 from r2_gaussian.dataset import Scene
@@ -32,6 +32,7 @@ from r2_gaussian.dataset.dataset_readers import angle2pose
 from r2_gaussian.utils.loss_utils import ecc_loss_for_pair, l1_loss, l2_loss, ssim, tv_3d_loss, voxel_empty_loss, smoothness_loss_knn
 from r2_gaussian.utils.image_utils import metric_vol, metric_proj
 from r2_gaussian.utils.plot_utils import show_two_slice
+from r2_gaussian.utils.graphics_utils import fov2focal
 
 
 
@@ -117,6 +118,7 @@ def training(
             render_pkg["visibility_filter"],
             render_pkg["radii"],
         )
+
 
         # Compute loss
         gt_image = viewpoint_cam.original_image.cuda()
@@ -270,14 +272,13 @@ def training(
             import math
             import matplotlib.pyplot as plt
             curr_angle = float(viewpoint_cam.angle)  # 現在角度（rad）
-            K = viewpoint_cam.projection_matrix[:3, :3]
             
-            dtheta = math.radians(1.0)  # 1° = π/180 rad
+            dtheta = math.radians(3)  # 1° = π/180 rad
             angle_plus  = (curr_angle + dtheta) % (2 * math.pi)
 
 
             angles = [angle_plus]
-            angle_loss = 0.0
+
 
             # CT 'transform_matrix' is a camera-to-world transform
 
@@ -306,26 +307,39 @@ def training(
 
                 # --- ここから可視化用 ---
                 render_pkg = render(viewpoint_cam_angle_plus, gaussians, pipe)
-                image_shift, _, _, _ = (
+                image_shift, viewspace_point_tensor, visibility_filter, radii = (
                     render_pkg["render"],
                     render_pkg["viewspace_points"],
                     render_pkg["visibility_filter"],
                     render_pkg["radii"],
                 )
+                
+                K = torch.tensor(
+                    [
+                        [fov2focal(viewpoint_cam.FoVx, gt_image[0].shape[1]), 0, gt_image[0].shape[1] / 2],
+                        [0, fov2focal(viewpoint_cam.FoVy, gt_image[0].shape[0]), gt_image[0].shape[0] / 2],
+                        [0, 0, 1],
+                    ]
+                ).to(device=gt_image.device, dtype=gt_image.dtype)
                 ecc_loss_value = ecc_loss_for_pair(
                     img0=gt_image,
                     img1=image_shift,
-                    P0=viewpoint_cam.world_view_transform, # w2c
-                    P1=viewpoint_cam_angle_plus.world_view_transform, # w2c 
-                    K = viewpoint_cam.projection_matrix,
+                    P0=viewpoint_cam.world_view_transform.T, # w2c
+                    P1=viewpoint_cam_angle_plus.world_view_transform.T, # w2c 
+                    K = K,
                     c0=viewpoint_cam.camera_center,
                     c1=viewpoint_cam_angle_plus.camera_center,
                     points3d=torch.zeros((3,), device=gt_image.device),  # ダミー
+                    global_iter=iteration,
+                    curr_angle=curr_angle,
                 )
-                #print("ecc_loss_value:", ecc_loss_value.item())
-                loss["ecc_loss"] = ecc_loss_value 
-                loss["total"] += loss["ecc_loss"]
+                # print("ecc_loss_value:", ecc_loss_value,
+                #     "requires_grad:", ecc_loss_value.requires_grad,
+                #     "grad_fn:", ecc_loss_value.grad_fn)
+                
 
+                loss["ecc_loss"] = ecc_loss_value 
+                loss["total"] += loss["ecc_loss"] * 0.01
         symmetry_loss =False
         # https://chatgpt.com/c/691ad40f-32e4-8324-97fe-a1b455f5d86f
         if symmetry_loss and iteration < 10000:

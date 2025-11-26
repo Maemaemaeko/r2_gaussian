@@ -15,7 +15,8 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from math import exp
 import torch.nn as nn
-
+from pathlib import Path
+import os
 from r2_gaussian.utils.epinaf_loss import (
     plane_points_on_Ephi,
     epipolar_line_on_view,
@@ -115,6 +116,8 @@ def ecc_loss_for_pair(
     Ns: int = 256,
     L_world: float = 200.0,
     eps_normal: float = 1.0,
+    global_iter: int = 0,
+    curr_angle: float = 0.0,
 ) -> torch.Tensor:
     """
     Epi-NAF風 Epipolar Consistency Loss for one pair of views.
@@ -150,6 +153,7 @@ def ecc_loss_for_pair(
     n0 = n0 / (n0.norm() + 1e-8)
 
 
+
     # 平面上の2点
     X1, X2 = plane_points_on_Ephi(n0, c0, c1, L=L_world)
 
@@ -163,7 +167,46 @@ def ecc_loss_for_pair(
 
     if p0_start is None or p1_start is None:
         # 画像内にほぼ通っていない
-        return torch.tensor(0.0, device=device, dtype=dtype)
+        return torch.zeros(1, device=img0.device, dtype=img0.dtype).sum()
+    
+    DEBUG_SAVE = False
+    DEBUG_DIR = Path("./vis_ecc")
+    os.makedirs(DEBUG_DIR, exist_ok=True)
+    import cv2
+    import numpy as np
+    # === デバッグ用に img0 と img1 に線を描画して保存 ===
+    if DEBUG_SAVE and curr_angle == 0.0:
+        file_prefix = f"iter_{global_iter:06d}_angle{int(math.degrees(curr_angle))}"
+        # img0
+        img0_vis = img0.clone().detach().cpu()
+        if img0_vis.dim() == 3:
+            img0_vis = img0_vis[0]  # (1,1,H,W) → (H,W)
+        img0_vis = (img0_vis * 255).clamp(0, 255).numpy().astype(np.uint8)
+        img0_vis = cv2.cvtColor(img0_vis, cv2.COLOR_GRAY2BGR)
+
+        cv2.line(
+            img0_vis,
+            (int(p0_start[0].item()), int(p0_start[1].item())),
+            (int(p0_end[0].item()), int(p0_end[1].item())),
+            (0, 0, 255), 2
+        )
+        cv2.imwrite(str(DEBUG_DIR / f"{file_prefix}_img0.png"), img0_vis)
+   
+        # img1
+        img1_vis = img1.clone().detach().cpu()
+        if img1_vis.dim() == 3:
+            img1_vis = img1_vis[0]  # (1,1,H,W) → (H,W)
+        img1_vis = (img1_vis * 255).clamp(0, 255).numpy().astype(np.uint8)
+        img1_vis = cv2.cvtColor(img1_vis, cv2.COLOR_GRAY2BGR)
+
+        cv2.line(
+            img1_vis,
+            (int(p1_start[0].item()), int(p1_start[1].item())),
+            (int(p1_end[0].item()), int(p1_end[1].item())),
+            (0, 255, 0), 2
+        )
+        
+        cv2.imwrite(str(DEBUG_DIR / f"{file_prefix}_img1.png"), img1_vis)
 
     # 各線分上を Ns点サンプル
     us0, vs0, delta0 = sample_points_on_segment(p0_start, p0_end, Ns)
@@ -174,30 +217,36 @@ def ecc_loss_for_pair(
 
     d1 = compute_normal_derivative(img1, us1, vs1, l1, eps=eps_normal)  # (Ns,)
 
+    # derivs_0, derivs_1 がどれだけ似ているか確認
+    # ECC の L1 diff 出力
+    # Tensor → numpy (GPU → CPU)
+    # d0_np = d0.detach().cpu().numpy()
+    # d1_np = d1.detach().cpu().numpy()
+    # l1_diff = np.mean(np.abs(d0_np - d1_np))
+    # angle_deg = math.degrees(curr_angle)
+    # print(f"ECC Loss angle {angle_deg:.1f} deg: L1 diff = {l1_diff:.6f}")
+
+    # # プロット保存
+    # import matplotlib.pyplot as plt
+    # plt.figure(figsize=(6,4))
+    # plt.plot(d0_np, label="cam 0")
+    # plt.plot(d1_np, label="cam 1")
+    # plt.title(f"Normal Derivative along Epipolar Line (θ={angle_deg:.1f}°)\nL1 diff={l1_diff:.6f}")
+    # plt.xlabel("Sample Index along Line")
+    # plt.ylabel("dI/dn")
+    # plt.legend()
+    # plt.tight_layout()
+
+    # # 保存 (角度で保存名を変える・iteration 入れることも推奨)
+    # save_path = DEBUG_DIR / f"ecc_derivative_phi_{angle_deg:.1f}.png"
+    # plt.savefig(save_path, dpi=300)
+    # plt.close()
+
+    # print(f"Saved derivative plot to {save_path}")
+
 
     loss = l1_loss(d0, d1)
-    import numpy as np
-    d0 = d0.detach().cpu().numpy()
-    d1 = d1.detach().cpu().numpy()
-    import matplotlib.pyplot as plt
-    plt.plot(d0)
-    plt.plot(d1)
-    plt.title("Normal Direction Derivatives along Epipolar Line")
-    plt.xlabel("Sample Index along Line")
-    plt.ylabel("dI/dn")
-    plt.legend()
-    plt.show()
-        
 
-
-    # # ∑ Δ_j δ の形に近づける
-    # S0 = d0 * delta0
-    # S1 = d1 * delta1
-
-    # # Epi-NAF の Eq.(4) 的な残差
-    # residual = S0.sum() - S1.sum()  # scalar
-
-    
     return loss
 
 

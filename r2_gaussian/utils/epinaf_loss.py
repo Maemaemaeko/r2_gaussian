@@ -50,8 +50,8 @@ def epipolar_line_on_view(w2c: torch.Tensor, K: torch.Tensor, X1: torch.Tensor, 
     X1_h = torch.cat([X1, torch.ones(1, device=X1.device, dtype=X1.dtype)])  # (4,)
     X2_h = torch.cat([X2, torch.ones(1, device=X2.device, dtype=X2.dtype)])  # (4,)
 
-    x1_c = w2c @ X1_h  # (3,)
-    x2_c = w2c @ X2_h  # (3,)
+    x1_c = (w2c @ X1_h)[:3] # (3,)
+    x2_c = (w2c @ X2_h)[:3] # (3,)
 
     x1_img = K @ x1_c  # (3,)
     x2_img = K @ x2_c  # (3,)

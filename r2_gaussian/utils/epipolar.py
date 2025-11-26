@@ -566,6 +566,7 @@ def main(dataset: ModelParams, args):
                 [0, 0, 1],
             ]
         )
+        print("K:\n", K)
         w2c = np.eye(4)
         w2c[:3, :3] = t2a(camera.R.T)
         w2c[:3, 3] = t2a(camera.T)
@@ -604,6 +605,8 @@ def main(dataset: ModelParams, args):
 
         c0 = np.array(cam_centers[idx0])
         c1 = np.array(cam_centers[idx1])
+        print("c0:", c0)
+        print("c1:", c1)
 
         # baseline
         b = c1 - c0
@@ -620,6 +623,7 @@ def main(dataset: ModelParams, args):
 
         # ---- オブジェクト中心 & スケール ----
         obj_center = np.array(scanner_cfg["offOrigin"], dtype=np.float64)  # 体積の中心
+        print("Object Center:", obj_center)
         s_voxel = np.array(scanner_cfg["sVoxel"], dtype=np.float64)        # 体積の物理サイズ
         max_extent = float(np.max(s_voxel))
 
@@ -655,6 +659,7 @@ def main(dataset: ModelParams, args):
         # 平面法線ベクトル n0 = (c1 - c0) × (obj_center - c0)
         n0 = np.cross(c1 - c0, obj_center - c0)
         n0 = n0 / np.linalg.norm(n0)
+        print("Plane normal n0:", n0)
 
 
         # ---- X1, X2 を epipolar 平面上に配置 ----
@@ -671,10 +676,10 @@ def main(dataset: ModelParams, args):
 
 
         # X1, X2をカメラ座標系に投影
+        print("Projection matrix K:\n", K)
+        print("Camera pose w2c for Cam", idx0, ":\n", cam_w2c[idx0])
         p1, d1 = project_point_np(X1, cam_w2c[idx0], K, image_size)
-        print(p1, d1)
         p2, d2 = project_point_np(X2, cam_w2c[idx0], K, image_size)
-        print(p2, d2)
         if p1 is not None and p2 is not None:
             q1, q2 = clip_infinite_line_to_image(p1, p2, image_size[0], image_size[1])
             #cos_weighted_img = cosine_weight_image(proj_images[idx0], K)
