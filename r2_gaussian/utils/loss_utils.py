@@ -175,7 +175,7 @@ def ecc_loss_for_pair(
     import cv2
     import numpy as np
     # === デバッグ用に img0 と img1 に線を描画して保存 ===
-    if DEBUG_SAVE and curr_angle == 0.0:
+    if DEBUG_SAVE:
         file_prefix = f"iter_{global_iter:06d}_angle{int(math.degrees(curr_angle))}"
         # img0
         img0_vis = img0.clone().detach().cpu()
@@ -248,6 +248,37 @@ def ecc_loss_for_pair(
     loss = l1_loss(d0, d1)
 
     return loss
+
+def pseudo_gt_loss_step(
+    dtheta_rad: float,
+    gt_image,
+    pred_minus,
+    pred_plus,
+    pred_plus_for_loss,
+):
+    """
+    1ステップ分の loss を計算する例。
+    - theta_deg: 中心角度（GT がある角度）
+    - gt_proj_dict: {角度: GT投影Tensor}
+    """
+
+    # --------- 2) 視点微分ベースの pseudo-GT 損失 ---------
+    #   θ の近傍 ±Δθ でモデルを動かして dP/dθ を推定
+
+
+    with torch.no_grad():
+        # 数値微分で dP/dθ ≈ (P(θ+Δ) - P(θ-Δ)) / (2Δ)
+        dP_dtheta  = (pred_plus - pred_minus) / (2.0 * dtheta_rad)
+
+        # GT(θ) に微分項を足して「擬似GT(θ+Δ)」を作る
+        pseudo_gt_plus = gt_image + dtheta_rad * dP_dtheta
+        pseudo_gt_plus = pseudo_gt_plus.detach()  # 勾配を流さない
+
+
+    # pseudo-GT loss
+    L_pseudo = F.l1_loss(pred_plus_for_loss, pseudo_gt_plus)
+
+    return L_pseudo
 
 
 

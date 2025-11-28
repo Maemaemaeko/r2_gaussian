@@ -29,7 +29,7 @@ from r2_gaussian.dataset import Scene
 from r2_gaussian.dataset.cameras import Camera
 from r2_gaussian.dataset.dataset_readers import angle2pose
 
-from r2_gaussian.utils.loss_utils import ecc_loss_for_pair, l1_loss, l2_loss, ssim, tv_3d_loss, voxel_empty_loss, smoothness_loss_knn
+from r2_gaussian.utils.loss_utils import ecc_loss_for_pair, l1_loss, l2_loss, ssim, tv_3d_loss, voxel_empty_loss, smoothness_loss_knn, pseudo_gt_loss_step
 from r2_gaussian.utils.image_utils import metric_vol, metric_proj
 from r2_gaussian.utils.plot_utils import show_two_slice
 from r2_gaussian.utils.graphics_utils import fov2focal
@@ -159,13 +159,28 @@ def training(
     
             curr_angle = float(viewpoint_cam.angle)  # 現在角度（rad）
             
-            dtheta = math.radians(1.0)  # 1° = π/180 rad
+            dtheta = math.radians(1)  # 1° = π/180 rad
             angle_minus = (curr_angle - dtheta) % (2 * math.pi)
             angle_plus  = (curr_angle + dtheta) % (2 * math.pi)
 
 
-            angles = [angle_plus]
+            angles = [angle_plus, angle_minus]
             angle_loss = 0.0
+
+            # EDGE_THRESH = 0.005 # 好きに調整してOK
+
+            # with torch.no_grad():
+            #     # x方向差分を計算（width 方向を -1 軸と仮定）
+            #     dx = torch.zeros_like(gt_image)
+            #     # [:, :, 1:] - [:, :, :-1] で x 方向の微分
+            #     dx[..., :, 1:] = torch.abs(
+            #         gt_image[..., :, :-1] - gt_image[..., :, 1:]
+            #     )
+            #     #print("dx stats:", dx.min().item(), dx.max().item(), dx.mean().item())
+
+            #     # 差分が小さいところだけ 1（残す）、大きいところは 0（除外）
+            #     mask = (dx < EDGE_THRESH).float()  # same shape as gt_image
+                #print("mask percent:", mask.sum().item() / mask.numel())
 
             # CT 'transform_matrix' is a camera-to-world transform
 
@@ -201,10 +216,141 @@ def training(
                     render_pkg["radii"],
                 )
 
-                angle_loss += l1_loss(image_shift, gt_image) * 0.01
+                # --------- マスク付き L1 loss ---------
+                #image_shift と gt_image の shape を合わせておくこと（例: (1,1,H,W) → squeeze など）
+                # diff = torch.abs(image_shift - gt_image) * mask
+                # masked_l1 = diff.sum() / (mask.sum() + 1e-6)
+                # angle_loss += masked_l1
+                angle_loss += l1_loss(image_shift, gt_image) * 0.1
 
-            loss["angle_smoothnses"] = angle_loss
+            loss["angle_smoothnses"] = angle_loss 
             loss["total"] += loss["angle_smoothnses"] 
+
+        # random_smoothness
+        random_smoothness = True
+        if random_smoothness:
+            import math
+            import matplotlib.pyplot as plt
+
+            
+            curr_angle = float(viewpoint_cam.angle)
+
+
+            # 0~60°までのrandomな値
+            import random
+            base_deg = random.randint(0, 59)
+
+            angle_minus = (curr_angle + math.radians(base_deg)) % (2 * math.pi)
+            angle_plus  = (curr_angle + math.radians(base_deg + 1)) % (2 * math.pi)
+            angles = [angle_minus, angle_plus]
+            images_shifts = []
+
+            for angle in angles:
+                c2w = angle2pose(5, angle)  # c2w
+                # get the world-to-camera transform and set R, T
+                w2c = np.linalg.inv(c2w)
+                R = np.transpose(
+                    w2c[:3, :3]
+                )  # R is stored transposed due to 'glm' in CUDA code
+                T = w2c[:3, 3]
+
+                viewpoint_cam_angle = Camera(
+                    colmap_id=viewpoint_cam.colmap_id,
+                    scanner_cfg=None,
+                    R=R,
+                    T=T,
+                    angle=angle,
+                    mode=viewpoint_cam.mode,
+                    FoVx=viewpoint_cam.FoVx,
+                    FoVy=viewpoint_cam.FoVy,
+                    image=torch.zeros((1, 512, 512)),
+                    image_name="none",
+                    uid=1,
+                )
+                # --- ここから可視化用 ---
+                render_pkg = render(viewpoint_cam_angle, gaussians, pipe)
+                image_shift, _, _, _ = (
+                    render_pkg["render"],
+                    render_pkg["viewspace_points"],
+                    render_pkg["visibility_filter"],
+                    render_pkg["radii"],
+                )
+                images_shifts.append(image_shift)
+            
+            loss["random_smoothness"] = l1_loss(images_shifts[0], images_shifts[1]) 
+            #print(loss["random_smoothness"])
+            loss["total"] += loss["random_smoothness"]
+
+        pseudo_gt = False
+
+        if pseudo_gt:
+            import math
+
+            curr_angle = float(viewpoint_cam.angle)  # 現在角度（rad）
+            dtheta = math.radians(1.0)
+
+            angle_minus = (curr_angle - dtheta) % (2 * math.pi)
+            angle_plus  = (curr_angle + dtheta) % (2 * math.pi)
+
+            # -------- 1) -1° 側：疑似GT用なので no_grad --------
+            with torch.no_grad():
+                c2w_minus = angle2pose(5, angle_minus)
+                w2c_minus = np.linalg.inv(c2w_minus)
+                R_minus = np.transpose(w2c_minus[:3, :3])
+                T_minus = w2c_minus[:3, 3]
+
+                cam_minus = Camera(
+                    colmap_id=viewpoint_cam.colmap_id,
+                    scanner_cfg=None,
+                    R=R_minus,
+                    T=T_minus,
+                    angle=angle_minus,
+                    mode=viewpoint_cam.mode,
+                    FoVx=viewpoint_cam.FoVx,
+                    FoVy=viewpoint_cam.FoVy,
+                    image=torch.zeros((1, 512, 512)),
+                    image_name="none",
+                    uid=1,
+                )
+                render_pkg_minus = render(cam_minus, gaussians, pipe)
+                pred_minus = render_pkg_minus["render"]   # 勾配なし
+
+            # -------- 2) +1° 側：勾配ありで一回だけ render --------
+            c2w_plus = angle2pose(5, angle_plus)
+            w2c_plus = np.linalg.inv(c2w_plus)
+            R_plus = np.transpose(w2c_plus[:3, :3])
+            T_plus = w2c_plus[:3, 3]
+
+            cam_plus = Camera(
+                colmap_id=viewpoint_cam.colmap_id,
+                scanner_cfg=None,
+                R=R_plus,
+                T=T_plus,
+                angle=angle_plus,
+                mode=viewpoint_cam.mode,
+                FoVx=viewpoint_cam.FoVx,
+                FoVy=viewpoint_cam.FoVy,
+                image=torch.zeros((1, 512, 512)),
+                image_name="none",
+                uid=1,
+            )
+            render_pkg_plus = render(cam_plus, gaussians, pipe)
+            pred_plus_for_loss = render_pkg_plus["render"]      # 勾配あり
+            pred_plus = pred_plus_for_loss.detach()            # 疑似GT用に detach
+
+            # -------- 3) pseudo GT loss 計算 --------
+            pseudo_gt_loss = pseudo_gt_loss_step(
+                dtheta_rad=dtheta,
+                gt_image=gt_image,      # これは別途定義済み前提
+                pred_minus=pred_minus,  # -1°
+                pred_plus=pred_plus,    # +1° (detached)
+                pred_plus_for_loss=pred_plus_for_loss,  # +1° (gradあり)
+            )
+
+            #print("pseudo_gt_loss:", pseudo_gt_loss.item())
+            #if iteration >= 500:
+            loss["pseudo_gt_loss"] = pseudo_gt_loss * 0.1
+            loss["total"] += loss["pseudo_gt_loss"]
 
 
 
@@ -267,7 +413,7 @@ def training(
 
 
         # ecc_loss_for_pair
-        ecc_loss = True
+        ecc_loss = False
         if ecc_loss:
             import math
             import matplotlib.pyplot as plt
@@ -277,50 +423,51 @@ def training(
             angle_plus  = (curr_angle + dtheta) % (2 * math.pi)
 
 
-            angles = [angle_plus]
+            #angles = [angle_plus]
 
 
             # CT 'transform_matrix' is a camera-to-world transform
+            loss["ecc_loss"] = 0.0
+            c2w = angle2pose(5, angle_plus)  # c2w
+            # get the world-to-camera transform and set R, T
+            w2c = np.linalg.inv(c2w)
+            R = np.transpose(
+                w2c[:3, :3]
+            )  # R is stored transposed due to 'glm' in CUDA code
+            T = w2c[:3, 3]
 
-            for angle_plus in angles:
-                c2w = angle2pose(5, angle_plus)  # c2w
-                # get the world-to-camera transform and set R, T
-                w2c = np.linalg.inv(c2w)
-                R = np.transpose(
-                    w2c[:3, :3]
-                )  # R is stored transposed due to 'glm' in CUDA code
-                T = w2c[:3, 3]
+            viewpoint_cam_angle_plus = Camera(
+                colmap_id=viewpoint_cam.colmap_id,
+                scanner_cfg=None,
+                R=R,
+                T=T,
+                angle=angle_plus,
+                mode=viewpoint_cam.mode,
+                FoVx=viewpoint_cam.FoVx,
+                FoVy=viewpoint_cam.FoVy,
+                image=torch.zeros((1, 512, 512)),
+                image_name="none",
+                uid=1,
+            )
 
-                viewpoint_cam_angle_plus = Camera(
-                    colmap_id=viewpoint_cam.colmap_id,
-                    scanner_cfg=None,
-                    R=R,
-                    T=T,
-                    angle=angle_plus,
-                    mode=viewpoint_cam.mode,
-                    FoVx=viewpoint_cam.FoVx,
-                    FoVy=viewpoint_cam.FoVy,
-                    image=torch.zeros((1, 512, 512)),
-                    image_name="none",
-                    uid=1,
-                )
+            # --- ここから可視化用 ---
+            render_pkg = render(viewpoint_cam_angle_plus, gaussians, pipe)
+            image_shift, viewspace_point_tensor, visibility_filter, radii = (
+                render_pkg["render"],
+                render_pkg["viewspace_points"],
+                render_pkg["visibility_filter"],
+                render_pkg["radii"],
+            )
+            
+            K = torch.tensor(
+                [
+                    [fov2focal(viewpoint_cam.FoVx, gt_image[0].shape[1]), 0, gt_image[0].shape[1] / 2],
+                    [0, fov2focal(viewpoint_cam.FoVy, gt_image[0].shape[0]), gt_image[0].shape[0] / 2],
+                    [0, 0, 1],
+                ]
+            ).to(device=gt_image.device, dtype=gt_image.dtype)
 
-                # --- ここから可視化用 ---
-                render_pkg = render(viewpoint_cam_angle_plus, gaussians, pipe)
-                image_shift, viewspace_point_tensor, visibility_filter, radii = (
-                    render_pkg["render"],
-                    render_pkg["viewspace_points"],
-                    render_pkg["visibility_filter"],
-                    render_pkg["radii"],
-                )
-                
-                K = torch.tensor(
-                    [
-                        [fov2focal(viewpoint_cam.FoVx, gt_image[0].shape[1]), 0, gt_image[0].shape[1] / 2],
-                        [0, fov2focal(viewpoint_cam.FoVy, gt_image[0].shape[0]), gt_image[0].shape[0] / 2],
-                        [0, 0, 1],
-                    ]
-                ).to(device=gt_image.device, dtype=gt_image.dtype)
+            for i in range(1):
                 ecc_loss_value = ecc_loss_for_pair(
                     img0=gt_image,
                     img1=image_shift,
@@ -329,17 +476,14 @@ def training(
                     K = K,
                     c0=viewpoint_cam.camera_center,
                     c1=viewpoint_cam_angle_plus.camera_center,
-                    points3d=torch.zeros((3,), device=gt_image.device),  # ダミー
+                    points3d=torch.zeros((3,), device=gt_image.device),  # ダミー)
+                    #points3d = torch.rand((3,), device=gt_image.device),
                     global_iter=iteration,
                     curr_angle=curr_angle,
                 )
-                # print("ecc_loss_value:", ecc_loss_value,
-                #     "requires_grad:", ecc_loss_value.requires_grad,
-                #     "grad_fn:", ecc_loss_value.grad_fn)
-                
-
-                loss["ecc_loss"] = ecc_loss_value 
-                loss["total"] += loss["ecc_loss"] * 0.01
+            
+                loss["ecc_loss"] += ecc_loss_value 
+            loss["total"] += loss["ecc_loss"] * 0.01
         symmetry_loss =False
         # https://chatgpt.com/c/691ad40f-32e4-8324-97fe-a1b455f5d86f
         if symmetry_loss and iteration < 10000:
@@ -443,42 +587,6 @@ def training(
             loss_depth = voxel_empty_loss(vol_pred) / 1000000
             loss["tv"] = loss_tv
             loss["total"] = loss["total"] + opt.lambda_tv * loss_depth
-        
-        # scale entropy loss
-        use_scale_entropy = False # 全然よくない
-        if use_scale_entropy and iter > 10000:
-            densities = gaussians.get_density
-
-            scale_scalar = torch.max(densities, dim=1).values  # (N,)
-            eps = 1e-8
-            scale_scalar = torch.clamp(scale_scalar, min=eps)
-            # ヒストグラムをsoft binningで近似して、その分布のエントロピーを計算する
-            # バケット中心をあらかじめ決める
-            num_bins = 16
-            s_min = torch.min(scale_scalar).detach()
-            s_max = torch.max(scale_scalar).detach()
-            bin_centers = torch.linspace(s_min, s_max + eps, steps=num_bins, device=scale_scalar.device)
-
-            # 各点を各binに割り当てる確率 (Gaussian kernel でsoft assignment)
-            # これでone-hotの代わりにスムーズな分布にするから勾配が通る
-            bandwidth = 0.1 * (s_max - s_min + eps)  # カーネル幅
-            diff = scale_scalar[:, None] - bin_centers[None, :]          # (N, num_bins)
-            weights = torch.exp(-0.5 * (diff / (bandwidth + eps)) ** 2)  # Gaussian kernel
-            # 正規化: 各点の重みが1になるように
-            weights = weights / (torch.sum(weights, dim=1, keepdim=True) + eps)
-
-
-            # すべての点を足し合わせてヒストグラムっぽい分布に
-            hist = torch.sum(weights, dim=0)  # (num_bins,)
-            # 確率分布に正規化
-            p = hist / (torch.sum(hist) + eps)  # (num_bins,)
-
-            # 分布のエントロピー H = -Σ p log p
-            entropy = -torch.sum(p * torch.log(p + eps)) 
-            print(entropy)
-            loss_scale_entropy = entropy / 10000
-            loss["scale_entropy"] = loss_scale_entropy
-            loss["total"] = loss["total"] + opt.lambda_tv * loss_scale_entropy
 
 
 
@@ -492,7 +600,7 @@ def training(
             gaussians.max_radii2D[visibility_filter] = torch.max(
                 gaussians.max_radii2D[visibility_filter], radii[visibility_filter]
             )
-            gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+            #gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
             if iteration < opt.densify_until_iter:
                 if (
                     iteration > opt.densify_from_iter
