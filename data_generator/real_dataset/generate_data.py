@@ -49,6 +49,10 @@ def main(args):
     angles = np.concatenate(
         [np.arange(angle_start, angle_last, angle_interval), [angle_last]]
     )
+ 
+
+    print(angles)
+    assert len(angles) == n_proj, f"{len(angles)} vs {n_proj}"
     angles = angles / 180.0 * np.pi
 
     # Read and save projections
@@ -62,7 +66,9 @@ def main(args):
     proj_mat_paths = sorted(glob.glob(osp.join(input_data_path, "*.mat")))
     projection_train_list = []
     projection_test_list = []
-    train_ids = np.linspace(0, n_proj - 1, args.n_train).astype(int)
+    #train_ids = np.linspace(0, n_proj - 1, args.n_train).astype(int)
+    train_ids = np.linspace(0, n_proj, args.n_train + 1).astype(int)[:-1]
+    print(train_ids)
     test_ids = sorted(
         random.sample(np.setdiff1d(np.arange(n_proj), train_ids).tolist(), args.n_test)
     )
@@ -90,7 +96,7 @@ def main(args):
 
         proj = scipy.io.loadmat(proj_mat_path)["img"] / proj_rescale * object_scale
         # projをjpegで保存
-        cv2.imwrite(osp.join(all_save_path, proj_save_name + ".jpg"), proj / np.max(proj) * 255)
+        cv2.imwrite(osp.join(all_save_path, proj_save_name + ".jpg"), scipy.io.loadmat(proj_mat_path)["img"] / np.max(scipy.io.loadmat(proj_mat_path)["img"]) * 255)
         proj = proj.astype(np.float32)
         proj[proj < 0] = 0
         # Shift left for 5 pixels according to dataset description
@@ -158,7 +164,7 @@ def main(args):
             nDetector = proj.shape
             projs.append(proj)
         projs = np.stack(projs, axis=0)
-        print("reconstruct with FDK")
+        print(f"reconstruct with FDK with {projs.shape} ...")
         geo = get_geometry_tigre(scanner_cfg)
         ct_gt = algs.fdk(projs[:, ::-1, :], geo, angles[::skip])
         ct_gt = ct_gt.transpose((2, 1, 0))
@@ -168,7 +174,7 @@ def main(args):
     # Save
     meta_data = {
         "scanner": scanner_cfg,
-        "ct": "vol_gt.npy",
+        "vol": "vol_gt.npy",
         "radius": 1.0,
         "bbox": bbox,
         "proj_train": projection_train_list,
@@ -187,7 +193,7 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=str, help="Path to output.")
     parser.add_argument("--proj_subsample", default=1, type=int, help="subsample projections pixels")
     parser.add_argument("--proj_rescale", default=400.0, type=float, help="rescale projection values to fit density to around [0,1]")
-    parser.add_argument("--object_scale", default=50, type=int, help="Rescale the whole scene to similar scales as the synthetic data")
+    parser.add_argument("--object_scale", default=15, type=int, help="Rescale the whole scene to similar scales as the synthetic data")
     parser.add_argument("--n_test", default=100, type=int, help="number of test")
     parser.add_argument("--n_train", default=75, type=int, help="number of train")
     

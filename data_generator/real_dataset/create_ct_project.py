@@ -45,7 +45,8 @@ def create_ct_project(project_name: str,
                       cor_fix=0,
                       binning=1,
                       save_to_disk=False,
-                      output_filename="") -> dict:
+                      output_filename="",
+                      data_dir="") -> dict:
     """
     Python reimplementation of MATLAB create_ct_project.
     project_name: path prefix of files (e.g., 'FIPS_raw/pine/20201118_pine_cone_')
@@ -69,7 +70,10 @@ def create_ct_project(project_name: str,
 
     # Determine size from first projection
     #first_img_file = f"{project_name}0001.tif"
-    first_img_file = "/home/maemaeko/imari_lab/r2_gaussian/data_generator/real_dataset/WebCT_raw/dragon/projections-0000.tiff"
+    # projnameからobject名を取得
+    object_name = project_name.split("/")[-2]
+    print(f"Object name: {object_name}")
+    first_img_file = f"{data_dir}/projection_0000.tiff"  # --- EDITED LINE ---
     I0 = imageio.imread(first_img_file).astype(np.float64)
     rows, cols = I0.shape
 
@@ -105,7 +109,8 @@ def create_ct_project(project_name: str,
         print(f"Processing image {iii}/{parameters['numberImages']} ...", end=" ")
 
         #filename = f"{project_name}{iii:04d}.tif"
-        filename = f"/home/maemaeko/imari_lab/r2_gaussian/data_generator/real_dataset/WebCT_raw/dragon/projections-{iii:04d}.tiff"  # --- EDITED LINE ---
+
+        filename = f"{data_dir}/projection_{iii:04d}.tiff"  # --- EDITED LINE ---
         I = imageio.imread(filename).astype(np.float64)
 
         # Extract background if not log transformed
