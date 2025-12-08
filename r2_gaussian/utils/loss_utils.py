@@ -47,12 +47,136 @@ def tv_3d_loss(vol, reduction="sum"):
 def voxel_empty_loss(vol):
     loss = torch.sum(vol)
     return loss
+
+
+def compute_layer_indices_from_z(xyz, num_layers, z_min=None, z_max=None):
+    """
+    xyz: (N, 3)
+    num_layers: レイヤー数（例：CTのスライス数や、任意に分割したい数）
+
+    戻り値:
+        layer_ids: (N,) int64, [0, num_layers-1]
+    """
+    device = xyz.device
+    z = xyz[:, 2]
+
+    if z_min is None:
+        z_min = z.min()
+    if z_max is None:
+        z_max = z.max()
+
+    if num_layers <= 1 or (z_max - z_min).abs() < 1e-8:
+        return torch.zeros_like(z, dtype=torch.long, device=device)
+
+    normalized = (z - z_min) / (z_max - z_min + 1e-8)
+    layer_ids = torch.floor(normalized * num_layers).long()
+    layer_ids = torch.clamp(layer_ids, 0, num_layers - 1)
+    return layer_ids
+
+
+def smoothness_loss_knn_layered_allpairs(
+    xyz,
+    theta,
+    layer_ids,
+    num_layers_sample=8,
+    num_centers_per_layer=200,  # 各レイヤーからサンプルする center 数
+    k=8,
+    radius=None,                # 一定 radius 内だけで smoothness を計算したい場合 (None なら制限なし)
+    sigma=0.03,
+):
+    """
+    xyz:       (N, 3)
+    theta:     (N, D)
+    layer_ids: (N,) それぞれの点が属するレイヤーID (0,1,...,L-1)
+
+    各レイヤーごとに:
+      - レイヤー内から center をランダムサンプリング
+      - レイヤー内の「全ての Gaussian」との距離を計算
+      - その中から最近傍 k 個をとり、(距離 <= radius) だけで smoothness を計算
+    """
+    device = xyz.device
+    N = xyz.shape[0]
+
+    # ---- 全レイヤー数 ----
+    L = int(layer_ids.max().item()) + 1
+
+    # ---- レイヤーをランダムサンプル ----
+    num_layers_sample = min(num_layers_sample, L)
+    sampled_layers = torch.randperm(L, device=device)[:num_layers_sample]
+
+    total_weighted_loss = xyz.new_tensor(0.0)
+    total_weight = xyz.new_tensor(0.0)
+
+    for layer in sampled_layers:
+        # ---- このレイヤーに属する点 ----
+        mask = (layer_ids == layer)
+        idx_layer = mask.nonzero(as_tuple=True)[0]
+        n_L = idx_layer.numel()
+
+        if n_L <= 1:
+            continue
+
+        # ---- center サンプル ----
+        num_centers = min(num_centers_per_layer, n_L)
+        perm_local = torch.randperm(n_L, device=device)[:num_centers]
+
+        center_idx_global = idx_layer[perm_local]   # (C,)
+        center_xyz = xyz[center_idx_global]         # (C, 3)
+        center_theta = theta[center_idx_global]     # (C, D)
+
+        # ---- レイヤー内全点 ----
+        xyz_layer = xyz[idx_layer]                  # (n_L, 3)
+        theta_layer = theta[idx_layer]              # (n_L, D)
+
+
+        # ---- 距離計算 (全点) ----
+        pts_i = center_xyz.unsqueeze(1)             # (C, 1, 3)
+        pts_j = xyz_layer.unsqueeze(0)              # (1, n_L, 3)
+
+        # XY 距離 or 3D 距離
+        #dists = (pts_i - pts_j).norm(dim=-1)       # 3D
+        dists = (pts_i[..., :2] - pts_j[..., :2]).norm(dim=-1)  # XY距離
+
+        # ---- 自己マスク ----
+        self_mask = (center_idx_global.unsqueeze(1) == idx_layer.unsqueeze(0))
+        dists = dists + self_mask * 1e6
+
+        # ---- kNN ----
+        k_eff = min(k, n_L - 1)
+        knn_dists, knn_local_idx = torch.topk(dists, k_eff, dim=-1, largest=False)
+        knn_idx_global = idx_layer[knn_local_idx]
+
+        # ---- theta 差分 ----
+        theta_i = center_theta.unsqueeze(1)
+        theta_j = theta[knn_idx_global]
+        diff = theta_i - theta_j
+        sq = (diff * diff).sum(dim=-1)
+
+        # ---- 距離重み ----
+        weights = torch.exp(-(knn_dists ** 2) / (sigma ** 2))
+
+        # ---- radius 制限 ----
+        if radius is not None:
+            radius_mask = (knn_dists <= radius)
+            weights = weights * radius_mask
+
+        weighted_sq_sum = (weights * sq).sum()
+        weight_sum = weights.sum()
+
+        if weight_sum > 0:
+            total_weighted_loss += weighted_sq_sum
+            total_weight += weight_sum
+
+    if total_weight == 0:
+        return xyz.new_tensor(0.0)
+
+    return total_weighted_loss / total_weight
     
 
 def smoothness_loss_knn(
     xyz,
     theta,
-    num_centers=1000,  # loss 計算に使う Gaussians の数
+    num_centers=50000,  # loss 計算に使う Gaussians の数
     k=8,
     M=320,
     sigma=0.03,
@@ -85,6 +209,7 @@ def smoothness_loss_knn(
     pts_i = center_xyz.unsqueeze(1)    # (num_centers, 1, 3)
     pts_j = xyz[rand_idx]              # (num_centers, M, 3)
     dists = (pts_i - pts_j).norm(dim=-1)  # (num_centers, M)
+    #print(dists.max())
 
     # 自分自身を候補から消したい場合（オプション）
     # 同じ index が入っているとき、距離を大きくして弾く
@@ -103,8 +228,150 @@ def smoothness_loss_knn(
 
     # ---- 6) 距離重みつき平均 ----
     weights = torch.exp(-(knn_dists ** 2) / (sigma ** 2))  # (num_centers, k)
+
+    radius = 0.2
+    radius_mask = (knn_dists <= radius).float()
+    weights = weights * radius_mask
+    sq = sq * radius_mask
+
     loss = (weights * sq).mean()
     return loss
+
+import torch
+import torch.nn.functional as F
+
+def quaternion_to_rotation_matrix(q: torch.Tensor) -> torch.Tensor:
+    """
+    q: (N, 4) quaternion
+    ※ (w,x,y,z) 前提。実装が (x,y,z,w) なら並び替えてください。
+    return: (N, 3, 3)
+    """
+    w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+
+    N = q.shape[0]
+    R = torch.zeros(N, 3, 3, device=q.device, dtype=q.dtype)
+
+    R[:, 0, 0] = 1 - 2 * (y * y + z * z)
+    R[:, 0, 1] = 2 * (x * y - z * w)
+    R[:, 0, 2] = 2 * (x * z + y * w)
+
+    R[:, 1, 0] = 2 * (x * y + z * w)
+    R[:, 1, 1] = 1 - 2 * (x * x + z * z)
+    R[:, 1, 2] = 2 * (y * z - x * w)
+
+    R[:, 2, 0] = 2 * (x * z - y * w)
+    R[:, 2, 1] = 2 * (y * z + x * w)
+    R[:, 2, 2] = 1 - 2 * (x * x + y * y)
+
+    return R
+
+
+def compute_gaussian_normals(rotation: torch.Tensor,
+                             scale: torch.Tensor) -> torch.Tensor:
+    """
+    rotation: (N, 4)
+    scale   : (N, 3)
+    return  : (N, 3) unit normals
+    """
+    R = quaternion_to_rotation_matrix(rotation)  # (N,3,3)
+
+    idx_min = torch.argmin(scale, dim=-1)       # (N,)
+    N = rotation.shape[0]
+    idx_batch = torch.arange(N, device=rotation.device)
+
+    normals = R[idx_batch, :, idx_min]          # (N,3)
+    normals = F.normalize(normals, dim=-1)
+    return normals
+
+
+def compute_gaussian_normals_xy(rotation: torch.Tensor,
+                                scale: torch.Tensor):
+    """
+    rotation: (N, 4)
+    scale   : (N, 3)
+    return  : (N, 2)   XY 平面に投影した 2D normal（単位ベクトル）
+    """
+    # --- 3D の normal 計算 ---
+    R = quaternion_to_rotation_matrix(rotation)  # (N,3,3)
+
+    idx_min = torch.argmin(scale, dim=-1)        # (N,)  最も小さい軸を normal とする
+    N = rotation.shape[0]
+    idx_batch = torch.arange(N, device=rotation.device)
+
+    normals_3d = R[idx_batch, :, idx_min]        # (N,3)
+    normals_3d = F.normalize(normals_3d, dim=-1)
+
+    # --- XY へ落とす ---
+    normals_xy = normals_3d[:, :2]               # (N,2) → x,y 成分だけ抜く
+
+    # --- XY 平面で正規化（長さ1の2Dベクトルに） ---
+    normals_xy = F.normalize(normals_xy, dim=-1)
+
+    return normals_xy
+
+
+def normal_smoothness_loss_knn(
+    xyz: torch.Tensor,
+    rotation: torch.Tensor,
+    scale: torch.Tensor,
+    num_centers: int = 1000,
+    k: int = 8,
+    M: int = 320,
+    sigma: float = 0.03,
+):
+    """
+    近傍 Gaussian 同士の normal 方向が揃うようにする loss
+    （normal と -normal を同一視）
+    """
+    device = xyz.device
+    N = xyz.shape[0]
+
+    # ---- normal 計算 ----
+    normals = compute_gaussian_normals(rotation, scale)  # (N,3)
+
+    if N <= num_centers:
+        num_centers = N
+
+    # 1) center サンプリング
+    center_idx = torch.randperm(N, device=device)[:num_centers]
+    center_xyz = xyz[center_idx]        # (num_centers, 3)
+    center_normal = normals[center_idx] # (num_centers, 3)
+
+    # 2) ランダム候補 M 個
+    rand_idx = torch.randint(0, N, (num_centers, M), device=device)
+
+    # 3) 距離計算
+    pts_i = center_xyz.unsqueeze(1)   # (num_centers, 1, 3)
+    pts_j = xyz[rand_idx]            # (num_centers, M, 3)
+    dists = (pts_i - pts_j).norm(dim=-1)  # (num_centers, M)
+
+    self_mask = (rand_idx == center_idx.unsqueeze(1))
+    dists = dists + self_mask * 1e6
+
+    # 4) 近い k 個
+    knn_dists, knn_local_idx = torch.topk(dists, k, dim=-1, largest=False)
+    knn_idx = torch.gather(rand_idx, 1, knn_local_idx)  # (num_centers, k)
+
+    # 5) normal の cos 類似度（±同一視）
+    n_i = center_normal.unsqueeze(1)  # (num_centers, 1, 3)
+    n_j = normals[knn_idx]           # (num_centers, k, 3)
+
+    # dot = cosθ（unit 正規化済み前提）
+    dot = (n_i * n_j).sum(dim=-1)    # (num_centers, k)
+    dot = torch.clamp(dot, -1.0, 1.0)
+
+    # 向き ± を同一視 → |dot|
+    # 完全に揃う or 逆向き: |dot|=1 → loss=0
+    # 直交: |dot|=0 → loss=1（最大）
+    sq = 1.0 - dot.abs()             # (num_centers, k)
+
+    # 6) 距離重み付き平均
+    weights = torch.exp(-(knn_dists ** 2) / (sigma ** 2))
+    loss = (weights * sq).mean()
+
+    return loss
+
+
 
 
 def ecc_loss_for_pair(
