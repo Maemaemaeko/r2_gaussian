@@ -29,7 +29,7 @@ from r2_gaussian.dataset import Scene
 from r2_gaussian.dataset.cameras import Camera
 from r2_gaussian.dataset.dataset_readers import angle2pose
 
-from r2_gaussian.utils.loss_utils import ecc_loss_for_pair, l1_loss, l2_loss, ssim, tv_3d_loss, voxel_empty_loss, smoothness_loss_knn, pseudo_gt_loss_step, normal_smoothness_loss_knn
+from r2_gaussian.utils.loss_utils import ecc_loss_for_pair, l1_loss, l2_loss, ssim, tv_3d_loss, voxel_empty_loss, smoothness_loss_knn, pseudo_gt_loss_step, normal_smoothness_loss_knn, smoothness_loss_knn_layered_allpairs, compute_layer_indices_from_z, smoothness_loss_knn_consensus
 from r2_gaussian.utils.image_utils import metric_vol, metric_proj
 from r2_gaussian.utils.plot_utils import show_two_slice
 from r2_gaussian.utils.graphics_utils import fov2focal
@@ -213,7 +213,7 @@ def training(
             loss["total"] += loss["angle_smoothnses"] 
 
         # random_smoothness
-        random_smoothness = True
+        random_smoothness = False
         edge_aware = False  # ← ここでON/OFF切り替え # Falseのほうがいい
 
         from PIL import Image
@@ -390,7 +390,7 @@ def training(
         
         # localization loss
         # https://chatgpt.com/s/t_691ad54ee9008191926ae297404dd944
-        gaussian_localization = False
+        gaussian_localization = True
         # 細部の構造が失われないよう
         if gaussian_localization:
             xyz     = gaussians.get_xyz[:, :3]
@@ -403,32 +403,12 @@ def training(
                 xyz=xyz,
                 theta=theta,
             )
+     
 
-            # lambda_smooth = 10000  # ハイパーパラメータ
-            # loss["param_smooth"] = param_smooth * lambda_smooth
-            # loss["total"] = loss["total"] + loss["param_smooth"]
+            # xyz: (N, 3), theta: (N, D)
 
+            loss["param_smooth"] = param_smooth * 1000
 
-            base_total = loss["total"].detach()
-            # 「smoothness を total の何割くらいにしたいか」
-            target_ratio = 0.1  # 例: 全体の 20% くらいの寄与にしたい
-
-            # lambda_smooth を loss スケールから自動決定
-            with torch.no_grad():
-                ps = param_smooth.detach()
-                if ps > 0:
-                    raw_lambda = target_ratio * base_total / (ps + 1e-8)
-                else:
-                    raw_lambda = torch.tensor(0.0, device=param_smooth.device)
-
-                # 極端な値はクリップ（必要に応じて調整）
-                min_lambda = 1e-4
-                max_lambda = 1e4
-                raw_lambda = torch.clamp(raw_lambda, min_lambda, max_lambda)
-
-            lambda_smooth = raw_lambda  # tensor のままで OK
-
-            loss["param_smooth"] = param_smooth * lambda_smooth
             loss["total"] = loss["total"] + loss["param_smooth"]
 
         normal_smoothness_knn = False
