@@ -29,7 +29,7 @@ from r2_gaussian.dataset import Scene
 from r2_gaussian.dataset.cameras import Camera
 from r2_gaussian.dataset.dataset_readers import angle2pose
 
-from r2_gaussian.utils.loss_utils import ecc_loss_for_pair, l1_loss, l2_loss, ssim, tv_3d_loss, voxel_empty_loss, smoothness_loss_knn, pseudo_gt_loss_step
+from r2_gaussian.utils.loss_utils import ecc_loss_for_pair, l1_loss, l2_loss, ssim, tv_3d_loss, voxel_empty_loss, smoothness_loss_knn, pseudo_gt_loss_step, normal_smoothness_loss_knn
 from r2_gaussian.utils.image_utils import metric_vol, metric_proj
 from r2_gaussian.utils.plot_utils import show_two_slice
 from r2_gaussian.utils.graphics_utils import fov2focal
@@ -122,11 +122,12 @@ def training(
 
         # Compute loss
         gt_image = viewpoint_cam.original_image.cuda()
+
         frame_idx = int(viewpoint_cam.uid)
 
         loss = {"total": 0.0}
-        #if frame_idx % 2 == 0:
         if True:
+        #if iteration %2 == 0:
             render_loss = l1_loss(image, gt_image)
             loss["render"] = render_loss
             loss["total"] += loss["render"]
@@ -166,21 +167,6 @@ def training(
 
             angles = [angle_plus, angle_minus]
             angle_loss = 0.0
-
-            # EDGE_THRESH = 0.005 # 好きに調整してOK
-
-            # with torch.no_grad():
-            #     # x方向差分を計算（width 方向を -1 軸と仮定）
-            #     dx = torch.zeros_like(gt_image)
-            #     # [:, :, 1:] - [:, :, :-1] で x 方向の微分
-            #     dx[..., :, 1:] = torch.abs(
-            #         gt_image[..., :, :-1] - gt_image[..., :, 1:]
-            #     )
-            #     #print("dx stats:", dx.min().item(), dx.max().item(), dx.mean().item())
-
-            #     # 差分が小さいところだけ 1（残す）、大きいところは 0（除外）
-            #     mask = (dx < EDGE_THRESH).float()  # same shape as gt_image
-                #print("mask percent:", mask.sum().item() / mask.numel())
 
             # CT 'transform_matrix' is a camera-to-world transform
 
@@ -227,9 +213,12 @@ def training(
             loss["total"] += loss["angle_smoothnses"] 
 
         # random_smoothness
-        # random_smoothness
         random_smoothness = True
-        edge_aware = True  # ← ここでON/OFF切り替え
+        edge_aware = False  # ← ここでON/OFF切り替え # Falseのほうがいい
+
+        from PIL import Image
+        import matplotlib.pyplot as plt
+
 
         if random_smoothness:
             import math
@@ -237,15 +226,115 @@ def training(
             import torch.nn.functional as F
 
             curr_angle = float(viewpoint_cam.angle)
+            delta_deg = 1     # 🔹0.1度刻みに変更
+            delta_rad = math.radians(delta_deg)
+            random_smooth_loss = 0
 
-            # 0~60°までのrandomな値
-            base_deg = random.randint(0, 59)
+            for i in range(3): # sampling数が多いほうがよい？
+                # 0~60°までのrandomな値
+                base_deg = random.randint(-19, 19)
 
-            angle_minus = (curr_angle + math.radians(base_deg)) % (2 * math.pi)
-            angle_plus  = (curr_angle + math.radians(base_deg + 1)) % (2 * math.pi)
+                angle_minus = (curr_angle + math.radians(base_deg)) % (2 * math.pi)
+                angle_plus  = (curr_angle + math.radians(base_deg + delta_deg)) % (2 * math.pi)
+
+                images_shifts = []
+                for angle in [angle_minus, angle_plus]:
+                    c2w = angle2pose(5, angle)
+                    w2c = np.linalg.inv(c2w)
+                    R = np.transpose(w2c[:3, :3])
+                    T = w2c[:3, 3]
+
+                    viewpoint_cam_angle = Camera(
+                        colmap_id=viewpoint_cam.colmap_id,
+                        scanner_cfg=None,
+                        R=R,
+                        T=T,
+                        angle=angle,
+                        mode=viewpoint_cam.mode,
+                        FoVx=viewpoint_cam.FoVx,
+                        FoVy=viewpoint_cam.FoVy,
+                        image=torch.zeros((1, 512, 512)),
+                        image_name="none",
+                        uid=1,
+                    )
+                    render_pkg = render(viewpoint_cam_angle, gaussians, pipe)
+                    image_shift = render_pkg["render"]
+                    if image_shift.ndim == 3:
+                        image_shift = image_shift.unsqueeze(1)  # (B,1,H,W)
+                    images_shifts.append(image_shift)
+
+                img0, img1 = images_shifts
+
+                # ===================================================
+                # 🟦 Edge-aware / Non edge-aware 切り替え
+                # ===================================================
+                if edge_aware:
+                    # ---- edge-aware weight 作成 ----
+                    with torch.no_grad():
+                        base_img = 0.5 * (img0 + img1)
+                        dx = base_img[..., :, 1:] - base_img[..., :, :-1]
+                        dy = base_img[..., 1:, :] - base_img[..., :-1, :]
+                        dx = F.pad(dx, (0, 1, 0, 0))  # (B,1,H,W)
+                        dy = F.pad(dy, (0, 0, 0, 1))
+
+                        grad_mag = torch.sqrt(dx * dx + dy * dy + 1e-6)
+                        gmax = grad_mag.max()
+                        if gmax > 0:
+                            grad_norm = grad_mag / gmax
+                        else:
+                            grad_norm = grad_mag
+
+                        alpha = 5.0  # エッジ抑制強度
+                        weight = torch.exp(-alpha * grad_norm).detach()
+
+                    diff = torch.abs(img0 - img1) * weight
+                    random_smooth_loss = diff.mean()
+
+                else:
+                    # ---- 通常のL1 smoothness ----
+                    # abs_dP = torch.abs(img0 - img1)
+                    # # threshold
+                    # tau = 0.01  # 好きな値に調整
+
+                    # # --- soft threshold weight ---
+                    # weight = torch.clamp(1.0 - abs_dP / tau, min=0.0, max=1.0)
+                    # weight = weight.detach()
+                    # random_smooth_loss = weight * abs_dP
+                    # # abs_dP を保存（curr_angle を渡す）
+                    # if iteration % 100 == 0:
+                    #     save_abs_dP_hist(abs_dP, curr_angle, iteration, save_dir="./debug_abs_no_loss")
+
+
+
+                    random_smooth_loss += torch.mean(torch.abs(img0 - img1))
+
+            # ===================================================
+            loss["random_smoothness"] = random_smooth_loss.mean() * 0.1
+            loss["total"] += loss["random_smoothness"]
+
+        smoothness_dP_dtheta = False
+
+        if smoothness_dP_dtheta:
+            import math
+            import random
+            import torch.nn.functional as F
+
+            curr_angle = float(viewpoint_cam.angle)
+
+            # ---- ランダムな基準角度 & Δθ ----
+            base_deg = random.randint(0, 59)   # 0〜59°
+            delta_deg = 1                    # 1° 間隔
+            delta_rad = math.radians(delta_deg)
+
+            # 3 つの角度: θ0, θ1 = θ0+Δ, θ2 = θ0+2Δ
+            angles = [
+                (curr_angle + math.radians(base_deg + 0 * delta_deg)) % (2 * math.pi),
+                (curr_angle + math.radians(base_deg + 1 * delta_deg)) % (2 * math.pi),
+                (curr_angle + math.radians(base_deg + 2 * delta_deg)) % (2 * math.pi),
+            ]
 
             images_shifts = []
-            for angle in [angle_minus, angle_plus]:
+            for angle in angles:
                 c2w = angle2pose(5, angle)
                 w2c = np.linalg.inv(c2w)
                 R = np.transpose(w2c[:3, :3])
@@ -270,115 +359,21 @@ def training(
                     image_shift = image_shift.unsqueeze(1)  # (B,1,H,W)
                 images_shifts.append(image_shift)
 
-            img0, img1 = images_shifts
+            img0, img1, img2 = images_shifts  # P(θ0), P(θ1), P(θ2)
 
             # ===================================================
-            # 🟦 Edge-aware / Non edge-aware 切り替え
+            # 🔹 dP/dθ を 2 点で計算して、その差分を L1 で抑える
+            #     dP0 ≈ (P1 - P0)/Δθ
+            #     dP1 ≈ (P2 - P1)/Δθ
             # ===================================================
-            if edge_aware:
-                # ---- edge-aware weight 作成 ----
-                with torch.no_grad():
-                    base_img = 0.5 * (img0 + img1)
-                    dx = base_img[..., :, 1:] - base_img[..., :, :-1]
-                    dy = base_img[..., 1:, :] - base_img[..., :-1, :]
-                    dx = F.pad(dx, (0, 1, 0, 0))  # (B,1,H,W)
-                    dy = F.pad(dy, (0, 0, 0, 1))
+            dP0 = (img1 - img0) / delta_rad
+            dP1 = (img2 - img1) / delta_rad
 
-                    grad_mag = torch.sqrt(dx * dx + dy * dy + 1e-6)
-                    gmax = grad_mag.max()
-                    if gmax > 0:
-                        grad_norm = grad_mag / gmax
-                    else:
-                        grad_norm = grad_mag
+            diff_dP = torch.abs(dP1 - dP0)  # = 離散二階微分に対応
+            random_smooth_loss = diff_dP.mean()
 
-                    alpha = 5.0  # エッジ抑制強度
-                    weight = torch.exp(-alpha * grad_norm).detach()
-
-                diff = torch.abs(img0 - img1) * weight
-                random_smooth_loss = diff.mean()
-
-            else:
-                # ---- 通常のL1 smoothness ----
-                random_smooth_loss = torch.mean(torch.abs(img0 - img1))
-
-            # ===================================================
-            loss["random_smoothness"] = random_smooth_loss * 0.1
-            loss["total"] += loss["random_smoothness"]
-
-
-        pseudo_gt = False
-
-        if pseudo_gt:
-            import math
-
-            curr_angle = float(viewpoint_cam.angle)  # 現在角度（rad）
-            dtheta = math.radians(1.0)
-
-            angle_minus = (curr_angle - dtheta) % (2 * math.pi)
-            angle_plus  = (curr_angle + dtheta) % (2 * math.pi)
-
-            # -------- 1) -1° 側：疑似GT用なので no_grad --------
-            with torch.no_grad():
-                c2w_minus = angle2pose(5, angle_minus)
-                w2c_minus = np.linalg.inv(c2w_minus)
-                R_minus = np.transpose(w2c_minus[:3, :3])
-                T_minus = w2c_minus[:3, 3]
-
-                cam_minus = Camera(
-                    colmap_id=viewpoint_cam.colmap_id,
-                    scanner_cfg=None,
-                    R=R_minus,
-                    T=T_minus,
-                    angle=angle_minus,
-                    mode=viewpoint_cam.mode,
-                    FoVx=viewpoint_cam.FoVx,
-                    FoVy=viewpoint_cam.FoVy,
-                    image=torch.zeros((1, 512, 512)),
-                    image_name="none",
-                    uid=1,
-                )
-                render_pkg_minus = render(cam_minus, gaussians, pipe)
-                pred_minus = render_pkg_minus["render"]   # 勾配なし
-
-            # -------- 2) +1° 側：勾配ありで一回だけ render --------
-            c2w_plus = angle2pose(5, angle_plus)
-            w2c_plus = np.linalg.inv(c2w_plus)
-            R_plus = np.transpose(w2c_plus[:3, :3])
-            T_plus = w2c_plus[:3, 3]
-
-            cam_plus = Camera(
-                colmap_id=viewpoint_cam.colmap_id,
-                scanner_cfg=None,
-                R=R_plus,
-                T=T_plus,
-                angle=angle_plus,
-                mode=viewpoint_cam.mode,
-                FoVx=viewpoint_cam.FoVx,
-                FoVy=viewpoint_cam.FoVy,
-                image=torch.zeros((1, 512, 512)),
-                image_name="none",
-                uid=1,
-            )
-            render_pkg_plus = render(cam_plus, gaussians, pipe)
-            pred_plus_for_loss = render_pkg_plus["render"]      # 勾配あり
-            pred_plus = pred_plus_for_loss.detach()            # 疑似GT用に detach
-
-            # -------- 3) pseudo GT loss 計算 --------
-            pseudo_gt_loss = pseudo_gt_loss_step(
-                dtheta_rad=dtheta,
-                gt_image=gt_image,      # これは別途定義済み前提
-                pred_minus=pred_minus,  # -1°
-                pred_plus=pred_plus,    # +1° (detached)
-                pred_plus_for_loss=pred_plus_for_loss,  # +1° (gradあり)
-            )
-
-            #print("pseudo_gt_loss:", pseudo_gt_loss.item())
-            #if iteration >= 500:
-            loss["pseudo_gt_loss"] = pseudo_gt_loss * 0.1
-            loss["total"] += loss["pseudo_gt_loss"]
-
-
-
+            loss["smoothness_dP_dtheta"] = random_smooth_loss * 0.1
+            loss["total"] += loss["smoothness_dP_dtheta"]
 
             # ================================
             # iteration 100毎に PNG 保存
@@ -435,6 +430,26 @@ def training(
 
             loss["param_smooth"] = param_smooth * lambda_smooth
             loss["total"] = loss["total"] + loss["param_smooth"]
+
+        normal_smoothness_knn = False
+        if normal_smoothness_knn:
+            xyz     = gaussians.get_xyz[:, :3]
+            scales  = gaussians.get_scaling[:, :3]
+            rotation = gaussians.get_rotation[:, :4]
+            opacity = gaussians.get_density[:, 0]
+            opacity = opacity.view(opacity.shape[0], -1)  # (N,1)
+            theta = torch.cat([opacity], dim=-1)
+
+
+            normal_smooth_loss = normal_smoothness_loss_knn(
+                xyz=xyz,
+                rotation=rotation,
+                scale=scales
+            )
+
+            loss["normal_smooth_loss"] = normal_smooth_loss
+            loss["total"] += loss["normal_smooth_loss"] 
+
 
 
         # ecc_loss_for_pair

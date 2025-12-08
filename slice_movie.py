@@ -3,11 +3,19 @@ import os
 from pathlib import Path
 import matplotlib.pyplot as plt
 from ipywidgets import interact
+import imageio.v2 as imageio
+
+
+import numpy as np
+import imageio.v2 as imageio
+import matplotlib.cm as cm
+import cv2
+
 
 mode = "pred" # or gt
 
 # 画像が入っているフォルダ
-img_dir = Path("/home/maemaeko/imari_lab/r2_gaussian/output/aEupholus_A_CT-38/test/iter_30000/render_test")
+img_dir = Path("/home/maemaeko/imari_lab/r2_gaussian/output/synthetic_dataset/cone_ntrain_3_angle_360-wo-densification/2_backpack_cone/test/iter_10000/reconstruction")
 
 # 出力ファイル
 output_video = img_dir / f"reconstruction_{mode}.mp4"
@@ -26,7 +34,7 @@ from PIL import Image, ImageTk
 # 画像フォルダ
 # 画像を読み込んでTkinter用に変換する関数
 def load_image(idx):
-    path = os.path.join(img_dir, f"{idx:05}_pred.png")
+    path = os.path.join(img_dir, f"{idx:05}_{mode}.png")
     if os.path.exists(path):
         img = Image.open(path)
         img = img.resize((512, 512))  # 表示サイズを適宜調整
@@ -63,17 +71,63 @@ status_label.pack(pady=5)
 root.mainloop()
 
 
+def save_as_gif_with_cmap(images, output_gif, fps=10, cmap_name="viridis"):
+    frames = []
 
-# 動画設定
-fps = 30  # お好みで (15, 24, 30, 60 など)
+    # matplotlib の colormap を取得
+    cmap = cm.get_cmap(cmap_name)
 
-fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-writer = cv2.VideoWriter(str(output_video), fourcc, fps, (w, h))
+    for img_path in images:
+        # 画像読み込み（カラー or グレースケール OK）
+        img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
 
-# 各フレーム書き込み
-for img_path in images:
-    img = cv2.imread(str(img_path))
-    writer.write(img)
+        # 0〜255 → 0〜1 正規化
+        img_norm = img.astype(np.float32) / 255.0
 
-writer.release()
-print(f"✅ 動画を書き出しました: {output_video}")
+        # カラーマップ適用 → RGBA（0〜1）
+        img_cmap = cmap(img_norm)
+
+        # RGBA → RGB（不要なalphaを削除） + 0〜255 変換
+        img_rgb = (img_cmap[:, :, :3] * 255).astype(np.uint8)
+
+        frames.append(img_rgb)
+
+    # GIF 保存
+    imageio.mimsave(
+        output_gif,
+        frames,
+        duration=1.0 / fps,
+    )
+    print(f"🎨 GIF を保存しました（cmap={cmap_name}）: {output_gif}")
+
+
+
+# 出力ファイル
+output_video = img_dir.parent / f"reconstruction_{mode}.gif"
+
+save_as_gif_with_cmap(
+    images,
+    output_video,
+    fps=90,
+    cmap_name="viridis"
+)
+
+
+
+# # --- MP4 保存 ---
+# fps = 30
+# fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+# writer = cv2.VideoWriter(str(output_video), fourcc, fps, (w, h))
+
+# for img_path in images:
+#     img = cv2.imread(str(img_path))
+#     writer.write(img)
+
+# writer.release()
+# print(f"🎥 MP4 を書き出しました: {output_video}")
+
+# # --- GIF 保存 ---
+# gif_path = "output.gif"
+# frames = [imageio.imread(str(p)) for p in images]
+# imageio.mimsave(gif_path, frames, duration=1.0/fps)
+# print(f"🎉 GIF も保存しました: {gif_path}")
