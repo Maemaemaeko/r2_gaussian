@@ -22,13 +22,36 @@ def pickle_to_ply(pickle_path, ply_path):
     rotation = data["rotation"]  # Shape (N, 4)
     opacities = data["density"]  # Shape (N, 1)
     N = xyz.shape[0]
-    print(opacities.min(), opacities.max())
-    # Plot the histogram
-    plt.hist(opacities.flatten(), bins=1000)
-    plt.title("Opacity Histogram")
-    plt.xlabel("Opacity")
-    plt.ylabel("Frequency")
-    plt.show()
+    print(f"Number of points: {N}")
+    # print(opacities.min(), opacities.max())
+    # # Plot the histogram
+    # plt.hist(opacities.flatten(), bins=1000)
+    # plt.title("Opacity Histogram")
+    # plt.xlabel("Opacity")
+    # plt.ylabel("Frequency")
+    # plt.show()
+
+
+    # print(scale.min(), scale.max())
+    # # Plot the histogram
+    # plt.hist(scale.flatten(), bins=1000)
+    # plt.title("Scale Histogram")
+    # plt.xlabel("Scale")
+    # plt.ylabel("Frequency")
+    # plt.show()
+
+    #print(scale.shape)
+
+    # mask = (scale < -3).all(axis=1)
+    # # mask = (scale > -5).all(axis=1)  # NumPy の場合
+    # xyz = xyz[mask]
+    # scale = scale[mask]
+    # rotation = rotation[mask]
+    # opacities = opacities[mask]
+    # N = xyz.shape[0]
+    # print(f"Number of reduced points: {N}")
+
+
 
     # # Normalize opacities
     # opacity_min, opacity_max = opacities.min(), opacities.max()
@@ -40,16 +63,19 @@ def pickle_to_ply(pickle_path, ply_path):
     # colors = colormap(opacities_norm.flatten())[:, :3]  # Extract RGB, ignore alpha
     colormap = matplotlib.colormaps.get_cmap("inferno")
 
-    p_min, p_max = np.percentile(opacities, [5, 95])  # Ignore extreme outliers
+    print(opacities.min(), opacities.max())
+    #p_min, p_max = np.percentile(opacities, [5, 95])  # Ignore extreme outliers
+    p_min, p_max = -10, 0
+
     opacities_clipped = np.clip(opacities, p_min, p_max)
     opacities_norm = (opacities_clipped - p_min) / (p_max - p_min)
     colors = colormap(opacities_norm.flatten())[:, :3]
 
-    # plt.hist(opacities_norm.flatten(), bins=1000)
-    # plt.title("opacities_norm Histogram")
-    # plt.xlabel("opacities_norm")
-    # plt.ylabel("Frequency")
-    # plt.show()
+    plt.hist(opacities_norm.flatten(), bins=100)
+    plt.title("opacities_norm Histogram")
+    plt.xlabel("opacities_norm")
+    plt.ylabel("Frequency")
+    plt.show()
 
     # opacities_norm_clipped = np.clip(opacities_norm, 0.4, 0.8)
     # plt.hist (opacities_norm_clipped.flatten(), bins=1000)
@@ -96,7 +122,7 @@ def pickle_to_ply(pickle_path, ply_path):
     return 
 
 # Example usage
-input_pickle = "/home/maemaeko/imari_lab/r2_gaussian/output/5bdb2914-5/point_cloud/iteration_30000/point_cloud.pickle"
+input_pickle = "/home/maemaeko/imari_lab/r2_gaussian/output/synthetic_dataset/cone_ntrain_75_angle_360/2_teapot_cone/point_cloud/iteration_10000/point_cloud.pickle"
 output_ply = input_pickle.split(".")[0] + ".ply"
 
 pickle_to_ply(input_pickle, output_ply)
