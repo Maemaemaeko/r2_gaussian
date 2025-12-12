@@ -9,6 +9,7 @@ import tigre.algorithms as algs
 from tqdm import trange
 from tigre.utilities.im3Dnorm import im3DNORM
 import matplotlib.pyplot as plt
+import glob
 
 sys.path.append("./")
 from r2_gaussian.utils.image_utils import metric_vol
@@ -213,3 +214,55 @@ def run_ct_recon_algs(projs, angles, geo, ct_gt, save_path, method):
 
     print("[{}] psnr_3d: {}, ssim_3d: {}".format(method, psnr_3d, ssim_3d))
     return report_dict, ct_pred, ct_gt
+
+
+if __name__ == "__main__":
+    # -------------------------------
+    # 1. 投影画像の読み込み
+    # -------------------------------
+    proj_dir = "/home/maemaeko/imari_lab/r2_gaussian/output/dP_dtheta_loss/eval_360/iter_10000/render_all"  # 00000_pred.npy ~ 00360_pred.npy があるディレクトリ
+    pattern = os.path.join(proj_dir, "*_pred.npy")
+
+    file_list = sorted(glob.glob(pattern))
+
+    if len(file_list) == 0:
+        raise RuntimeError(f"No files found with pattern: {pattern}")
+
+    # 例: (num_views, H, W) になるように読み込み & stack
+    projs = []
+    for f in file_list:
+        arr = np.load(f)  # (H, W) を想定
+        projs.append(arr)
+    projs = np.stack(projs, axis=0)  # shape: (N_views, H, W)
+
+    num_views = projs.shape[0]
+    print(f"Loaded {num_views} projection images.")
+
+    # -------------------------------
+    # 2. 角度配列の作成
+    # -------------------------------
+    # 00000_pred.npy ~ 00360_pred.npy なら 361 枚かもしれないので、
+    # ファイル数に合わせて 0~2π を等間隔に割る
+    angles = np.linspace(0.0, 2.0 * np.pi, num_views, endpoint=False).astype(np.float32)
+
+    # -------------------------------
+    # 3. 再構成 (FDK)
+    # -------------------------------
+    # geo はあらかじめ作っておく前提:
+    # 例: from your_geo_module import geo
+    scanner_cfg = "/home/maemaeko/imari_lab/r2_gaussian/data_generator/synthetic_dataset/scanner/cone_beam.yml"
+    with open(scanner_cfg, "r") as f:
+        cfg_dict = yaml.safe_load(f)
+    geo = get_geometry_tigre(cfg_dict)
+
+    # ここでは geo が既に存在することを仮定
+    vol = recon_volume(projs, angles, geo, recon_method="fdk")
+
+    print("Reconstruction finished. Volume shape:", vol.shape)
+
+    # -------------------------------
+    # 4. 結果を保存
+    # -------------------------------
+    save_path = os.path.join(proj_dir, "recon_fdk_volume.npy")
+    np.save(save_path, vol)
+    print(f"Saved reconstructed volume to: {save_path}")

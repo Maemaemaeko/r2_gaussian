@@ -33,6 +33,7 @@ from r2_gaussian.utils.loss_utils import ecc_loss_for_pair, l1_loss, l2_loss, ss
 from r2_gaussian.utils.image_utils import metric_vol, metric_proj
 from r2_gaussian.utils.plot_utils import show_two_slice
 from r2_gaussian.utils.graphics_utils import fov2focal
+from r2_gaussian.utils.loss_utils import generate_random_RT_pairs_pm1deg
 
 
 
@@ -311,6 +312,58 @@ def training(
             # ===================================================
             loss["random_smoothness"] = random_smooth_loss.mean() * 0.1
             loss["total"] += loss["random_smoothness"]
+
+        random_sample_smoothness = True
+        
+        if random_sample_smoothness:
+            import math
+            import random
+            import torch.nn.functional as F
+            random_sample_smoothness_loss = 0
+            R0, T0, R1, T1 = generate_random_RT_pairs_pm1deg(
+                n_poses=8,
+                bbox_min=-5.0,
+                bbox_max= 5.0,
+                up=np.array([0., 0., 1.], dtype=np.float32),
+                seed=None,
+            )
+            
+            for i in range(len(R0)):
+                viewpoint_cam_0 = Camera(
+                    colmap_id=viewpoint_cam.colmap_id,
+                    scanner_cfg=None,
+                    R=R0[i],
+                    T=T0[i],
+                    angle=viewpoint_cam.angle,
+                    mode=viewpoint_cam.mode,
+                    FoVx=viewpoint_cam.FoVx,
+                    FoVy=viewpoint_cam.FoVy,
+                    image=torch.zeros((1, 512, 512)),
+                    image_name="none",
+                    uid=1,
+                )
+                render_cam_0 = render(viewpoint_cam_0, gaussians, pipe)["render"]
+                viewpoint_cam_1 = Camera(
+                    colmap_id=viewpoint_cam.colmap_id,
+                    scanner_cfg=None,
+                    R=R1[i],
+                    T=T1[i],
+                    angle=viewpoint_cam.angle,
+                    mode=viewpoint_cam.mode,
+                    FoVx=viewpoint_cam.FoVx,
+                    FoVy=viewpoint_cam.FoVy,
+                    image=torch.zeros((1, 512, 512)),
+                    image_name="none",
+                    uid=1,
+                )
+                render_cam_1 = render(viewpoint_cam_1, gaussians, pipe)["render"]
+
+                random_sample_smoothness_loss += torch.mean(torch.abs(render_cam_0 - render_cam_1))
+
+            # ===================================================
+            loss["random_sample_smoothness"] = random_sample_smoothness_loss.mean() * 0.1
+            loss["total"] += loss["random_sample_smoothness"]
+
 
         smoothness_dP_dtheta = False
 

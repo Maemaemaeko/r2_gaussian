@@ -17,6 +17,7 @@ from math import exp
 import torch.nn as nn
 from pathlib import Path
 import os
+import numpy as np
 from r2_gaussian.utils.epinaf_loss import (
     plane_points_on_Ephi,
     epipolar_line_on_view,
@@ -47,6 +48,141 @@ def tv_3d_loss(vol, reduction="sum"):
 def voxel_empty_loss(vol):
     loss = torch.sum(vol)
     return loss
+
+
+def _normalize(v, eps=1e-8):
+    n = np.linalg.norm(v)
+    return v / (n + eps)
+
+def look_at_c2w(camera_center,
+                target=np.array([0., 0., 0.], dtype=np.float32),
+                up=np.array([0., 1., 0.], dtype=np.float32)):
+    """
+    camera_center: (3,) world coords (C)
+    target:       (3,) look-at point (デフォルト原点)
+    up:           (3,) world up direction
+    return:       c2w (4,4)
+    """
+    C = camera_center.astype(np.float32)
+    T = target.astype(np.float32)
+
+    # forward: カメラの +z (画面奥) の向き in world
+    forward = _normalize(T - C)
+
+    # right: x
+    right = _normalize(np.cross(forward, up))
+    # re-orthogonalized up
+    up2 = np.cross(right, forward)
+
+    c2w = np.eye(4, dtype=np.float32)
+    c2w[:3, 0] = right
+    c2w[:3, 1] = up2
+    c2w[:3, 2] = forward
+    c2w[:3, 3] = C
+    return c2w
+
+
+def rotate_vec_axis_angle(v, axis, angle):
+    """
+    v    : (3,) 回転させたいベクトル
+    axis : (3,) 回転軸（単位ベクトル）
+    angle: [rad]
+    """
+    v = v.astype(np.float32)
+    axis = _normalize(axis.astype(np.float32))
+    cos_t = np.cos(angle)
+    sin_t = np.sin(angle)
+
+    # Rodrigues の回転公式
+    return (v * cos_t
+            + np.cross(axis, v) * sin_t
+            + axis * np.dot(axis, v) * (1.0 - cos_t))
+
+def generate_random_RT_pairs_pm1deg(
+    n_poses=120,
+    bbox_min=-5.0,
+    bbox_max= 5.0,
+    up=np.array([0., 1., 0.], dtype=np.float32),
+    min_radius=1e-3,
+    seed=None,
+):
+    """
+    ランダムなカメラ位置 C を bbox 内からサンプルして、
+    - base カメラ: C を注視点(0,0,0)に向けた姿勢
+    - offset カメラ: C を原点中心の回転で ±1° だけずらした位置 C'
+                     を注視点(0,0,0)に向けた姿勢
+    を作る。
+
+    戻り値:
+      R_base:   (N, 3, 3)
+      T_base:   (N, 3)
+      R_offset: (N, 3, 3)
+      T_offset: (N, 3)
+    ここで R, T はあなたのコードに合わせて:
+      w2c = inv(c2w)
+      R = w2c[:3,:3].T
+      T = w2c[:3,3]
+    となっています。
+    """
+    rng = np.random.default_rng(seed)
+    target = np.array([0., 0., 0.], dtype=np.float32)
+
+    R_base_list   = []
+    T_base_list   = []
+    R_offset_list = []
+    T_offset_list = []
+
+    for _ in range(n_poses):
+        # 1) bbox 内から C_base をサンプル（原点に近すぎる場合は再サンプル）
+        for _try in range(1000):
+            C_base = rng.uniform(bbox_min, bbox_max, size=(3,)).astype(np.float32)
+            if np.linalg.norm(C_base - target) > min_radius:
+                break
+
+        # 2) C_base に直交するランダム軸を作る
+        for _try in range(10):
+            rand = rng.normal(size=(3,))
+            axis = np.cross(C_base, rand)
+            if np.linalg.norm(axis) > 1e-6:
+                break
+        else:
+            # まれに全部ダメだったときの保険
+            axis = np.array([0., 1., 0.], dtype=np.float32)
+
+        # 3) ±1° を rad にして決める
+        sign = rng.choice(np.array([-1.0, 1.0]))
+        angle = sign * np.deg2rad(1.0)
+
+        # 4) C_base を原点中心に回転 → C_offset
+        C_offset = rotate_vec_axis_angle(C_base, axis, angle)
+
+        # 5) それぞれ look-at 原点で c2w を作る
+        c2w_base   = look_at_c2w(C_base,   target=target, up=up)
+        c2w_offset = look_at_c2w(C_offset, target=target, up=up)
+
+        # 6) w2c にしてから、あなたの形式の R, T に変換
+        w2c_base   = np.linalg.inv(c2w_base)
+        w2c_offset = np.linalg.inv(c2w_offset)
+
+        R_base   = w2c_base[:3, :3].T.astype(np.float32)
+        T_base   = w2c_base[:3, 3].astype(np.float32)
+        R_offset = w2c_offset[:3, :3].T.astype(np.float32)
+        T_offset = w2c_offset[:3, 3].astype(np.float32)
+
+        R_base_list.append(R_base)
+        T_base_list.append(T_base)
+        R_offset_list.append(R_offset)
+        T_offset_list.append(T_offset)
+
+    R_base   = np.stack(R_base_list,   axis=0)
+    T_base   = np.stack(T_base_list,   axis=0)
+    R_offset = np.stack(R_offset_list, axis=0)
+    T_offset = np.stack(T_offset_list, axis=0)
+    return R_base, T_base, R_offset, T_offset
+
+
+
+
 
 
 def compute_layer_indices_from_z(xyz, num_layers, z_min=None, z_max=None):
@@ -237,6 +373,83 @@ def smoothness_loss_knn(
     loss = (weights * sq).mean()
     return loss
 
+
+def smoothness_loss_knn_consensus(
+    xyz,
+    theta,
+    num_centers=10000,
+    k=8,
+    M=320,
+    sigma=0.03,
+    radius=0.2,
+):
+    """
+    center に周りを寄せるのではなく、
+    「近傍 θ の重み付き代表値（局所モード的なもの）」に
+    近づける smoothness loss
+    """
+    N = xyz.shape[0]
+    device = xyz.device
+
+    if N <= num_centers:
+        num_centers = N
+
+    # ---- 1) center サンプリング ----
+    center_idx = torch.randperm(N, device=device)[:num_centers]
+    center_xyz = xyz[center_idx]      # (C,3)
+    # center_theta は「集合の代表値計算」に含めても良いが、
+    # ここでは「近傍だけ」から代表値を計算する設計にしている
+    # center_theta = theta[center_idx]  # (C,D)
+
+    # ---- 2) 候補 M をランダムサンプル ----
+    rand_idx = torch.randint(0, N, (num_centers, M), device=device)  # (C,M)
+
+    # ---- 3) 距離計算 ----
+    pts_i = center_xyz.unsqueeze(1)         # (C,1,3)
+    pts_j = xyz[rand_idx]                   # (C,M,3)
+    dists = (pts_i - pts_j).norm(dim=-1)    # (C,M)
+
+    # center 自身を除外
+    self_mask = (rand_idx == center_idx.unsqueeze(1))
+    dists = dists + self_mask * 1e6
+
+    # ---- 4) kNN ----
+    knn_dists, knn_local_idx = torch.topk(dists, k, dim=-1, largest=False)  # (C,k)
+    knn_idx = torch.gather(rand_idx, 1, knn_local_idx)                      # (C,k)
+
+    # ---- 5) 近傍 θ と距離重み ----
+    theta_neigh = theta[knn_idx]                       # (C,k,D)
+    weights = torch.exp(-(knn_dists ** 2) / (sigma ** 2))  # (C,k)
+
+    # 半径制限：radius 以内だけを有効に
+    if radius is not None:
+        radius_mask = (knn_dists <= radius)
+        weights = weights * radius_mask
+
+    # 近傍が一つもいない center は捨てる
+    weight_sum_per_center = weights.sum(dim=-1)               # (C,)
+    valid_center_mask = (weight_sum_per_center > 0)
+    if not valid_center_mask.any():
+        return torch.tensor(0.0, device=device, dtype=theta.dtype)
+
+    weights = weights[valid_center_mask]          # (C_valid,k)
+    theta_neigh = theta_neigh[valid_center_mask]  # (C_valid,k,D)
+    weight_sum_per_center = weight_sum_per_center[valid_center_mask]  # (C_valid,)
+
+    # ---- 6) 近傍 θ の「局所代表値（重み付き平均）」を計算 ----
+    #   theta_bar_c = Σ_j w_cj * θ_cj / Σ_j w_cj   (各 center c に対して)
+    w_norm = weights / (weight_sum_per_center.unsqueeze(-1) + 1e-8)  # (C_valid,k)
+    theta_bar = (w_norm.unsqueeze(-1) * theta_neigh).sum(dim=1)      # (C_valid,D)
+
+    # ---- 7) 代表値からのずれを最小化 ----
+    #   loss_c = Σ_j w_cj ||θ_cj - θ_bar_c||^2 / Σ_j w_cj
+    diff = theta_neigh - theta_bar.unsqueeze(1)          # (C_valid,k,D)
+    sq = (diff * diff).sum(dim=-1)                       # (C_valid,k)
+
+    num = (weights * sq).sum()                           # 全 center で合計
+    den = weights.sum() + 1e-8
+    loss = num / den
+    return loss
 import torch
 import torch.nn.functional as F
 
