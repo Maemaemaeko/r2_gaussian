@@ -20,7 +20,7 @@ def fips_process_raw_data(data_path: str, data_save_path: str):
     shutil.copyfile(str(data_path) + ".txt", data_save_path / "config.txt")
 
     # --- Read data using create_ct_project
-    CtData = create_ct_project(str(data_path), "3D")
+    CtData = create_ct_project(str(data_path), "3D", data_dir=str(data_path.parent))
     sinogram = CtData["sinogram"]
 
     # --- Save data slice by slice
@@ -44,7 +44,8 @@ if __name__ == "__main__":
 
     # data_path = "/home/maemaeko/imari_lab/r2_gaussian/data_generator/real_dataset/FIPS_raw/pine/20201118_pine_cone_"
     # data_save_path = "/home/maemaeko/imari_lab/r2_gaussian/data_generator/real_dataset/FIPS_processed/pine"
-    data_path = "/home/maemaeko/imari_lab/r2_gaussian/data_generator/real_dataset/WebCT_raw/dragon/20250918_dragon_cone_"
-    data_save_path = "/home/maemaeko/imari_lab/r2_gaussian/data_generator/real_dataset/WebCT_processed/dragon"
+    # data_path = "/home/maemaeko/imari_lab/r2_gaussian/data_generator/real_dataset/WebCT_raw/dragon/20250918_dragon_cone_"
+    data_path = "/home/maemaeko/imari_lab/r2_gaussian/data_generator/real_dataset/gVXR_raw_v4/teapot/20251021_teapot_cone_"
+    data_save_path = "/home/maemaeko/imari_lab/r2_gaussian/data_generator/real_dataset/gVXR_processed_v4/teapot"
 
     fips_process_raw_data(data_path, data_save_path)

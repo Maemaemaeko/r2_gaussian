@@ -25,6 +25,7 @@ def initialize_gaussian(gaussians: GaussianModel, args: ModelParams, loaded_iter
         assert osp.exists(ply_path), f"Cannot find {ply_path} for loading."
         gaussians.load_ply(ply_path)
         print("Loading trained model at iteration {}".format(loaded_iter))
+        print("Loading from {}".format(ply_path))
     else:
         if args.ply_path == "":
             if osp.exists(osp.join(args.source_path, "meta_data.json")):

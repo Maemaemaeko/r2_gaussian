@@ -197,7 +197,7 @@ def point_depths_from_camera(
 
 if __name__ == "__main__":
     pts = np.load("/home/maemaeko/imari_lab/r2_gaussian/data/real_dataset/cone_ntrain_75_angle_360/teapot/init_teapot.npy")  
-    #visualize_point_cloud(pts)
+    visualize_point_cloud(pts)
 
 
     meta_data_path = "/home/maemaeko/imari_lab/r2_gaussian/data/real_dataset/cone_ntrain_75_angle_360/teapot/meta_data.json"

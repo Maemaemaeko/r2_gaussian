@@ -122,7 +122,7 @@ def pickle_to_ply(pickle_path, ply_path):
     return 
 
 # Example usage
-input_pickle = "/home/maemaeko/imari_lab/r2_gaussian/output/synthetic_dataset/cone_ntrain_75_angle_360/2_teapot_cone/point_cloud/iteration_10000/point_cloud.pickle"
+input_pickle = "/home/maemaeko/imari_lab/r2_gaussian/output/synthetic_dataset/cone_ntrain_9_angle_360-random-sampling-loss-wo-densification-wo-filter/0_foot_cone/point_cloud/iteration_10000/point_cloud.pickle"
 output_ply = input_pickle.split(".")[0] + ".ply"
 
 pickle_to_ply(input_pickle, output_ply)

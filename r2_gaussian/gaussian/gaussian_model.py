@@ -484,7 +484,7 @@ class GaussianModel:
         new_xyz = self._xyz[selected_pts_mask]
         # new_densities = self._density[selected_pts_mask]
         new_densities = self.density_inverse_activation(
-            self.get_density[selected_pts_mask] * 0.5
+            self.get_density[selected_pts_mask] 
         )
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
@@ -510,7 +510,10 @@ class GaussianModel:
         densify_scale_threshold,
         bbox=None,
     ):
+        #print("self.xyz_gradient_accum:", self.xyz_gradient_accum.max(), self.xyz_gradient_accum.min())
         grads = self.xyz_gradient_accum / self.denom
+        #print("grads before nan:", grads.max(), grads.min())
+
         grads[grads.isnan()] = 0.0
 
         # Densify Gaussians if Gaussians are fewer than threshold
@@ -550,7 +553,15 @@ class GaussianModel:
         return grads
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
-        self.xyz_gradient_accum[update_filter] += torch.norm(
-            viewspace_point_tensor.grad[update_filter, :2], dim=-1, keepdim=True
-        )
+        # Some points may not have gradients (e.g., not visible or rasterizer produced no grad)
+        # Guard against None gradients by treating them as zero.
+        grad = viewspace_point_tensor.grad
+        if grad is None:
+            # No gradient was computed for this view; add zero to accum and increment denom
+            zeros = torch.zeros_like(self.xyz_gradient_accum[update_filter])
+            self.xyz_gradient_accum[update_filter] += zeros
+        else:
+            self.xyz_gradient_accum[update_filter] += torch.norm(
+                grad[update_filter, :2], dim=-1, keepdim=True
+            )
         self.denom[update_filter] += 1

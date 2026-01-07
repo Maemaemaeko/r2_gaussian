@@ -87,7 +87,7 @@ if __name__ == "__main__":
     # Set up command line argument parser
     parser = ArgumentParser(description="Training script parameters")
     lp = ModelParams(parser)
-    parser.add_argument("--mc_thresh", type=float, default=0.5, help="Threshold of marching cubes for mesh extraction from volume.")
+    parser.add_argument("--mc_thresh", type=float, default=0.2, help="Threshold of marching cubes for mesh extraction from volume.")
     parser.add_argument("--cam_scale", type=float, default=1.0, help="Size of camera model for visualization")
     args = parser.parse_args(sys.argv[1:])
     main(lp.extract(args), args)

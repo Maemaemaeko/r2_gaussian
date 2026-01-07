@@ -32,7 +32,7 @@ from r2_gaussian.arguments import (
 from r2_gaussian.dataset import Scene
 from r2_gaussian.gaussian import GaussianModel, render, query, initialize_gaussian
 from r2_gaussian.utils.general_utils import safe_state, t2a
-from r2_gaussian.utils.image_utils import metric_vol, metric_proj
+from r2_gaussian.utils.image_utils import metric_vol, metric_proj, metric_vol_per_slice
 
 
 def testing(
@@ -114,6 +114,10 @@ def evaluate_volume(
     psnr_3d, _ = metric_vol(vol_gt, vol_pred, "psnr")
     ssim_3d, ssim_3d_axis = metric_vol(vol_gt, vol_pred, "ssim")
 
+    summary, per_slice = metric_vol_per_slice(vol_gt, vol_pred, pixel_max=1.0)
+
+
+
     multithread_write(
         [vol_gt[..., i][None] for i in range(vol_gt.shape[2])],
         slice_save_path,
@@ -146,6 +150,18 @@ def evaluate_volume(
         sitk.GetImageFromArray(t2a(vol_pred).transpose(2, 0, 1)),
         os.path.join(save_path, "vol_pred.nii.gz"),
     )
+    import pandas as pd
+
+    rows = []
+    for axis in [0,1,2]:
+        for i, (p, s, v) in enumerate(zip(per_slice[axis]["psnr"], per_slice[axis]["ssim"], per_slice[axis]["valid_mask"])):
+            rows.append({"axis": axis, "slice": i, "psnr": p, "ssim": s, "valid": v})
+
+    df = pd.DataFrame(rows)
+    csv_path = os.path.join(save_path, "per_slice_metrics.csv")
+    df.to_csv(csv_path, index=False)
+    print("saved to:", csv_path)
+
 
     print(f"{name} complete. psnr_3d: {psnr_3d}, ssim_3d: {ssim_3d}")
 

@@ -468,6 +468,38 @@ def create_textured_camera(
 
     output = [cam, coord]
 
+
+
+    show_center_ray=True
+    ray_through_principal=True
+    ray_len=None
+    if show_center_ray:
+        if ray_len is None:
+            ray_len = 10 * scale  # 好みで調整
+
+        C = c2w[:3, 3].astype(np.float64)      # camera center (world)
+        R = c2w[:3, :3].astype(np.float64)     # camera rotation (c2w)
+
+        if ray_through_principal:
+            cx, cy = float(K[0, 2]), float(K[1, 2])
+            pix = np.array([cx, cy, 1.0], dtype=np.float64)
+            d_cam = np.linalg.inv(K.astype(np.float64)) @ pix  # camera coords
+        else:
+            d_cam = np.array([0.0, 0.0, 1.0], dtype=np.float64)  # camera +Z
+
+        d_cam /= (np.linalg.norm(d_cam) + 1e-12)
+        d_world = R @ d_cam
+        d_world /= (np.linalg.norm(d_world) + 1e-12)
+
+        P = C + ray_len * d_world  # endpoint
+
+        ray = o3d.geometry.LineSet()
+        ray.points = o3d.utility.Vector3dVector(np.stack([C, P], axis=0))
+        ray.lines  = o3d.utility.Vector2iVector(np.array([[0, 1]], dtype=np.int32))
+        ray.colors = o3d.utility.Vector3dVector(np.array([camera_color], dtype=np.float64))
+
+        output.append(ray)
+
     if id is not None:
         id_mesh = o3d.t.geometry.TriangleMesh.create_text(id, depth=0.1).to_legacy()
         id_mesh.paint_uniform_color(camera_color)

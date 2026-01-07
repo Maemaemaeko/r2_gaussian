@@ -49,7 +49,7 @@ def testing(
     scene.gaussians = gaussians
 
 
-    scene_gt_path = "/home/maemaeko/imari_lab/r2_gaussian/data/synthetic_dataset/cone_ntrain_360_angle_360/0_head_cone"
+    scene_gt_path = "/home/maemaeko/imari_lab/r2_gaussian/data/synthetic_dataset/cone_ntrain_360_angle_360/0_jaw_cone"
 
 
     # ModelParams を使わず、必要な属性だけ持った args を作る

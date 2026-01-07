@@ -99,6 +99,7 @@ def rotate_vec_axis_angle(v, axis, angle):
             + axis * np.dot(axis, v) * (1.0 - cos_t))
 
 def generate_random_RT_pairs_pm1deg(
+    iteration,
     n_poses=120,
     bbox_min=-5.0,
     bbox_max= 5.0,
@@ -150,8 +151,11 @@ def generate_random_RT_pairs_pm1deg(
             axis = np.array([0., 1., 0.], dtype=np.float32)
 
         # 3) ±1° を rad にして決める
-        sign = rng.choice(np.array([-1.0, 1.0]))
-        angle = sign * np.deg2rad(1.0)
+        sign = rng.choice(np.array([-1, 1]))
+        if iteration < 5000:
+            angle = sign * np.deg2rad(1)
+        else:
+            angle = sign * np.deg2rad(1)
 
         # 4) C_base を原点中心に回転 → C_offset
         C_offset = rotate_vec_axis_angle(C_base, axis, angle)
@@ -180,7 +184,400 @@ def generate_random_RT_pairs_pm1deg(
     T_offset = np.stack(T_offset_list, axis=0)
     return R_base, T_base, R_offset, T_offset
 
+import numpy as np
 
+def _normalize(v, eps=1e-8):
+    n = np.linalg.norm(v)
+    if n < eps:
+        return v
+    return v / n
+
+def lookat_c2w(C, target=np.zeros(3, dtype=np.float32),
+               up_hint=np.array([0., 1., 0.], dtype=np.float32)):
+    """
+    c2w where:
+      - camera position = C
+      - camera forward (+z) looks at target
+      - x/y constructed from up_hint
+    """
+    C = C.astype(np.float32)
+    target = target.astype(np.float32)
+    up_hint = up_hint.astype(np.float32)
+
+    # z axis: forward (+z) towards target
+    z = _normalize(target - C)
+
+    # handle degenerate case (if C == target)
+    if np.linalg.norm(z) < 1e-6:
+        z = np.array([0., 0., 1.], dtype=np.float32)
+
+    # x axis: right = up x z  (so that y is close to up_hint)
+    x = np.cross(up_hint, z)
+    if np.linalg.norm(x) < 1e-6:
+        # if up_hint parallel to z, choose another up
+        alt_up = np.array([1., 0., 0.], dtype=np.float32)
+        x = np.cross(alt_up, z)
+    x = _normalize(x)
+
+    # y axis: up = z x x
+    y = np.cross(z, x)
+    y = _normalize(y)
+
+    c2w = np.eye(4, dtype=np.float32)
+    c2w[:3, 0] = x
+    c2w[:3, 1] = y
+    c2w[:3, 2] = z
+    c2w[:3, 3] = C
+    return c2w
+
+def generate_random_RT_pairs_translate_only(
+    n_poses=120,
+    bbox_min=-5.0,
+    bbox_max= 5.0,
+    up_hint=np.array([0., 1., 0.], dtype=np.float32),
+    min_radius=1e-3,
+    trans_mag=0.05,
+    seed=None,
+):
+    """
+    平行移動のみ（回転は固定）:
+      base:   ランダムな位置 C_base で、原点(0,0,0)を注視する姿勢
+      offset: C_base を視線方向に直交する平面内で Δ 平行移動した C_offset
+              回転は base と同じ（= 姿勢は一切変えない）
+    """
+    rng = np.random.default_rng(seed)
+
+    R_base_list, T_base_list = [], []
+    R_off_list,  T_off_list  = [], []
+
+    target = np.zeros(3, dtype=np.float32)
+
+    for _ in range(n_poses):
+        # 1) bbox 内から C_base をサンプル
+        for _try in range(1000):
+            C_base = rng.uniform(bbox_min, bbox_max, size=(3,)).astype(np.float32)
+            if np.linalg.norm(C_base) > min_radius:
+                break
+
+
+        # 2) base の c2w（原点注視）
+        c2w_base = lookat_c2w(C_base, target=target, up_hint=up_hint)
+
+        # 3) Δ を「視線方向 forward に直交する平面」で作る
+        view_dir = c2w_base[:3, 2]  # world forward (+z) = towards origin
+        for _try in range(50):
+            v = rng.normal(size=(3,)).astype(np.float32)
+            v = v - np.dot(v, view_dir) * view_dir  # project out forward component
+            n = np.linalg.norm(v)
+            if n > 1e-6:
+                v = v / n
+                break
+        else:
+            v = np.array([1., 0., 0.], dtype=np.float32)
+
+        sign  = rng.choice(np.array([-1.0, 1.0], dtype=np.float32))
+        delta = sign * trans_mag * v
+        C_off = C_base + delta
+
+        # 4) offset は「位置だけ差し替え」、回転は固定
+        c2w_off = c2w_base.copy()
+        c2w_off[:3, 3] = C_off.astype(np.float32)
+
+        # 5) w2c -> (R,T)（あなたの形式）
+        w2c_base = np.linalg.inv(c2w_base)
+        w2c_off  = np.linalg.inv(c2w_off)
+
+        R_base = w2c_base[:3, :3].T.astype(np.float32)
+        T_base = w2c_base[:3, 3].astype(np.float32)
+
+        R_off  = w2c_off[:3, :3].T.astype(np.float32)
+        T_off  = w2c_off[:3, 3].astype(np.float32)
+
+        R_base_list.append(R_base); T_base_list.append(T_base)
+        R_off_list.append(R_off);   T_off_list.append(T_off)
+
+    return (
+        np.stack(R_base_list, axis=0),
+        np.stack(T_base_list, axis=0),
+        np.stack(R_off_list, axis=0),
+        np.stack(T_off_list, axis=0),
+    )
+
+def tv_l1(img, eps=0.0):
+    """
+    隣接pixelの差を小さくする（TV-L1）
+    img: (H,W) or (B,C,H,W)
+    """
+    if img.dim() == 2:
+        img = img[None, None]  # (1,1,H,W)
+    elif img.dim() == 3:
+        img = img[None]        # (1,C,H,W)
+
+    dx = img[:, :, :, 1:] - img[:, :, :, :-1]   # 横方向
+    dy = img[:, :, 1:, :] - img[:, :, :-1, :]   # 縦方向
+
+    if eps > 0:
+        # Charbonnier（L1の滑らか版）にしたいとき
+        dx = torch.sqrt(dx * dx + eps * eps)
+        dy = torch.sqrt(dy * dy + eps * eps)
+    else:
+        dx = dx.abs()
+        dy = dy.abs()
+
+    return (dx.mean() + dy.mean())
+
+def fov_to_focal(FoVx, FoVy, W, H):
+    fx = W / (2.0 * np.tan(FoVx / 2.0))
+    fy = H / (2.0 * np.tan(FoVy / 2.0))
+    return fx, fy
+
+
+def quat_to_rotmat(q: torch.Tensor) -> torch.Tensor:
+    """
+    q: (..., 4)  [r, x, y, z]
+    return: (..., 3, 3)
+    """
+    r, x, y, z = q.unbind(-1)
+    # 3DGS の computeCov3D に合わせた回転
+    R = torch.stack([
+        1 - 2*(y*y + z*z),  2*(x*y - r*z),      2*(x*z + r*y),
+        2*(x*y + r*z),      1 - 2*(x*x + z*z),  2*(y*z - r*x),
+        2*(x*z - r*y),      2*(y*z + r*x),      1 - 2*(x*x + y*y),
+    ], dim=-1)
+    R = R.reshape(q.shape[:-1] + (3, 3))
+    return R
+
+def build_cov3d(scale: torch.Tensor,
+                rot: torch.Tensor,
+                scale_modifier: float = 1.0) -> torch.Tensor:
+    """
+    scale: (N,3)
+    rot:   (N,4) quaternion [r,x,y,z]
+    return: Sigma: (N,3,3)  3D 共分散行列
+    """
+    # S 行列
+    s = scale_modifier * scale
+    S = torch.zeros(scale.shape[0], 3, 3, device=scale.device, dtype=scale.dtype)
+    S[:, 0, 0] = s[:, 0]
+    S[:, 1, 1] = s[:, 1]
+    S[:, 2, 2] = s[:, 2]
+
+    # 回転行列
+    R = quat_to_rotmat(rot)
+
+    # M = S * R
+    M = torch.matmul(S, R)
+
+    # Sigma = M^T * M
+    Sigma = torch.matmul(M.transpose(-1, -2), M)
+    return Sigma
+
+
+def gaussian_density_along_ray(
+    ray_o: torch.Tensor,          # (3,)
+    ray_d: torch.Tensor,          # (3,), normalized
+    t_vals: torch.Tensor,         # (S,)
+    xyz: torch.Tensor,            # (N,3)
+    Sigma: torch.Tensor,          # (N,3,3)
+    opacity: torch.Tensor,        # (N,)
+    line_radius: float = None,    # None or 距離閾値 (optional)
+) -> torch.Tensor:
+    """
+    与えられた Gaussians に対し、1本の ray 上のサンプル点での密度 ρ(t) を計算する。
+
+    return: rho: (S,)  ray 上の密度プロファイル
+    """
+    device = xyz.device
+    ray_o = ray_o.to(device)
+    ray_d = ray_d.to(device)
+    t_vals = t_vals.to(device)
+    opacity = opacity.to(device)
+    Sigma = Sigma.to(device)
+
+    # まず、この ray に関係しそうな Gaussian だけに絞る（optional）
+    idx = torch.arange(xyz.shape[0], device=device)
+    if line_radius is not None:
+        # 線分と点の距離: || (p - o) x d || / ||d||
+        # ここでは d は正規化前提として ||d||=1 でOK
+        v = xyz - ray_o[None, :]          # (N,3)
+        cross = torch.cross(v, ray_d[None, :].expand_as(v), dim=-1)
+        dist_line = cross.norm(dim=-1)    # (N,)
+        mask = dist_line <= line_radius
+        idx = idx[mask]
+
+    if idx.numel() == 0:
+        return torch.zeros_like(t_vals)
+
+    # フィルタされた Gaussians
+    mu = xyz[idx]          # (M,3)
+    Sig = Sigma[idx]       # (M,3,3)
+    opa = opacity[idx]     # (M,)
+
+    # 逆行列を計算
+    Sig_inv = torch.inverse(Sig)  # (M,3,3)
+
+    # ray 上サンプル点
+    # x(t_k) = o + t_k d
+    pts = ray_o[None, :] + t_vals[:, None] * ray_d[None, :]   # (S,3)
+
+    # (M,S,3) にブロードキャスト
+    diff = pts[None, :, :] - mu[:, None, :]   # (M,S,3)
+
+    # diff^T * Sig_inv * diff を計算： (M,S)
+    # tmp = diff @ Sig_inv
+    tmp = torch.matmul(diff, Sig_inv)    # (M,S,3)
+    maha = (tmp * diff).sum(dim=-1)      # (M,S)
+
+    # ガウシアン値（正規化定数無視）
+    gauss_val = torch.exp(-0.5 * maha)   # (M,S)
+
+    # opacity で重み付け
+    rho = (opa[:, None] * gauss_val).sum(dim=0)  # (S,)
+
+    return rho
+
+
+import torch
+import torch.nn.functional as F
+
+def sample_random_rays_light(camera, n_rays: int, device=None, seed=None):
+    """
+    (H,W) 全生成せず、ランダム n_rays 本だけ world ray を作る。
+    return:
+      ray_o: (n,3)
+      ray_d: (n,3)
+      pix_ij: (n,2)  # (i=x, j=y)
+    """
+    if device is None:
+        device = camera.world_view_transform.device
+
+    H = int(camera.image_height)
+    W = int(camera.image_width)
+    HW = H * W
+    n = min(n_rays, HW)
+
+    g = None
+    if seed is not None:
+        g = torch.Generator(device=device)
+        g.manual_seed(seed)
+
+    idx = torch.randint(0, HW, (n,), device=device, generator=g)  # with replacement
+    j = idx // W
+    i = idx % W
+    pix_ij = torch.stack([i, j], dim=-1)
+
+    fx, fy = fov_to_focal(camera.FoVx, camera.FoVy, W, H)
+    cx = W / 2.0
+    cy = H / 2.0
+
+    i_f = i.to(torch.float32) + 0.5
+    j_f = j.to(torch.float32) + 0.5
+
+    x_cam = (i_f - cx) / fx
+    y_cam = (j_f - cy) / fy
+    z_cam = torch.ones_like(x_cam)
+
+    dirs_cam = torch.stack([x_cam, y_cam, z_cam], dim=-1)  # (n,3)
+    dirs_cam = dirs_cam / torch.norm(dirs_cam, dim=-1, keepdim=True)
+
+    # カメラ回転（学習対象ではないので tensor化でOK）
+    R_c2w = torch.as_tensor(camera.R, device=device, dtype=torch.float32)  # (3,3)
+    dirs_world = torch.matmul(dirs_cam, R_c2w.T)
+    dirs_world = dirs_world / torch.norm(dirs_world, dim=-1, keepdim=True)
+
+    ray_o = camera.camera_center.to(device, dtype=torch.float32).view(1, 3).expand(n, 3)
+    return ray_o, dirs_world, pix_ij
+
+from typing import Optional
+def ray_entropy_loss_from_camera(
+    camera,
+    gaussians,
+    n_rays: int = 10,
+    t_near: float = 0.0,
+    t_far: float = 2.0,
+    n_samples: int = 200,
+    eps: float = 1e-12,
+    normalize: bool = True,
+    mode: str = "min",        # "min": 低entropyへ / "max": 高entropyへ
+    beta: float = 20.0,       # softplus鋭さ
+    device: str = "cuda",
+    seed: Optional[int] = None,
+    line_radius: Optional[float] = None,
+):
+    """
+    1) ランダムに n_rays 本サンプル
+    2) 各rayで rho(t) を計算
+    3) rho から entropy を作って平均を loss として返す（微分可能）
+    """
+    device = torch.device(device)
+
+    # --- ray サンプル（ray自体は定数扱いでOK）---
+    ray_o_all, ray_d_all, _ = sample_random_rays_light(camera, n_rays, device=device, seed=seed)
+
+    # --- t サンプル ---
+    t_vals = torch.linspace(t_near, t_far, steps=n_samples, device=device)
+
+    # dt（長さSに揃える・0を作らない）
+    if n_samples >= 2:
+        dt = torch.cat([t_vals[1:] - t_vals[:-1], (t_vals[-1:] - t_vals[-2:-1])])
+    else:
+        dt = torch.ones_like(t_vals)
+    dt = dt.detach().clamp_min(0.0)  # dtは定数扱い
+
+    # --- Gaussian パラメータ（ここは勾配を通したい）---
+    xyz     = gaussians.get_xyz[:, :3]
+    scale   = gaussians.get_scaling[:, :3]
+    opacity = gaussians.get_density[:, 0]   # 実装によっては get_opacity 等に合わせて
+    rot     = gaussians.get_rotation[:, :4]
+
+    Sigma = build_cov3d(scale, rot, scale_modifier=1.0)  # (N,3,3) 勾配OK
+
+    # --- rays で entropy を計算して平均 ---
+    losses = []
+    for r in range(ray_o_all.shape[0]):
+        ray_o = ray_o_all[r] / 5
+        ray_d = ray_d_all[r]
+
+        # ray の設定（原点から z方向に伸びる ray）
+        # ray_o = torch.tensor([-1.0, 0, 0], device=device)
+        # ray_d = torch.tensor([1, 0.0, 0], device=device)
+        # ray_d = ray_d / ray_d.norm()
+
+        rho = gaussian_density_along_ray(
+            ray_o=ray_o,
+            ray_d=ray_d,
+            t_vals=t_vals,
+            xyz=xyz,
+            Sigma=Sigma,
+            opacity=opacity,
+            line_radius=line_radius,
+        )  # (S,)
+
+        rho_cpu = rho.detach().cpu().numpy()
+
+        # mass_raw（連続近似のため dt を掛ける）
+        mass_raw = rho * dt
+
+        mass = mass_raw + eps
+
+        Z = mass.sum() + eps
+        p = mass / Z
+
+        H = -(p * (p + eps).log()).sum()
+
+        if normalize:
+            H = H / (torch.log(torch.tensor(float(n_samples), device=device)) + eps)
+
+        losses.append(H)
+
+    loss = torch.stack(losses).mean()
+
+    if mode == "min":
+        return loss
+    elif mode == "max":
+        return 1-loss
+    else:
+        raise ValueError("mode must be 'min' or 'max'")
 
 
 

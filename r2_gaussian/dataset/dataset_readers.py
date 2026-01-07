@@ -46,7 +46,7 @@ def readBlenderInfo(path, eval):
     meta_data_path = osp.join(path, "meta_data.json")
     with open(meta_data_path, "r") as handle:
         meta_data = json.load(handle)
-    meta_data["vol"] = osp.join(path, meta_data["ct"])
+    meta_data["vol"] = osp.join(path, meta_data["vol"])
 
     if not "dVoxel" in meta_data["scanner"]:
         meta_data["scanner"]["dVoxel"] = list(
@@ -311,3 +311,10 @@ sceneLoadTypeCallbacks = {
     "Blender": readBlenderInfo,
     "NAF": readNAFInfo,
 }
+
+if __name__ == "__main__":
+    #readBlenderInfo("/home/maemaeko/imari_lab/r2_gaussian/data/real_dataset/cone_ntrain_10_angle_360/teapot", eval=False)
+    meta_data = json.load(open("/home/maemaeko/imari_lab/r2_gaussian/data/real_dataset/cone_ntrain_75_angle_360/teapot/meta_data.json"))
+    source_path = "/home/maemaeko/imari_lab/r2_gaussian/data/real_dataset/cone_ntrain_75_angle_360/teapot"
+    cam_infos = readCTameras(meta_data, source_path)
+    #print(cam_infos["train"][0])

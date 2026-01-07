@@ -75,27 +75,9 @@ def init_pcd(
             valid_indices.shape[0] >= n_points
         ), "Valid voxels less than target number of sampling. Check threshold"
 
-        from sklearn.utils import shuffle
-        print(n_points)
-        uniform_sample = False
-        def uniform_sample(valid_indices, voxel_size, n_points):
-            # 各ボクセル座標をvoxel_sizeで割って量子化
-            grid_coords = np.floor(valid_indices / voxel_size).astype(int)
-
-            # 重複するvoxel gridごとに1点だけ残す
-            _, unique_indices = np.unique(grid_coords, axis=0, return_index=True)
-            sampled = valid_indices[unique_indices]
-
-            # 残りが多ければランダムにn_points選ぶ
-            if len(sampled) > n_points:
-                sampled = shuffle(sampled, random_state=42)[:n_points]
-            return sampled
-        if uniform_sample == True:
-            sampled_indices = uniform_sample(valid_indices, voxel_size=1, n_points=n_points)
-        else:
-            sampled_indices = valid_indices[
-                np.random.choice(len(valid_indices), n_points, replace=False)
-            ]
+        sampled_indices = valid_indices[
+            np.random.choice(len(valid_indices), n_points, replace=False)
+        ]
         sampled_positions = sampled_indices * dVoxel - sVoxel / 2 + offOrigin
         sampled_densities = vol[
             sampled_indices[:, 0],
@@ -103,7 +85,7 @@ def init_pcd(
             sampled_indices[:, 2],
         ]
         sampled_densities = sampled_densities * args.density_rescale
-    print(len(sampled_densities))
+
     out = np.concatenate([sampled_positions, sampled_densities[:, None]], axis=-1)
     np.save(save_path, out)
     print(f"Initialization saved in {save_path}.")
@@ -140,6 +122,15 @@ def main(
         save_path
     ), f"Initialization file {save_path} exists! Delete it first."
     os.makedirs(osp.dirname(save_path), exist_ok=True)
+
+    # 偶数インデックス（0,2,4,...）
+    projs_even   = projs_train[0::2]
+    angles_even  = angles_train[0::2]
+
+    # 奇数インデ
+    # ックス（1,3,5,...）
+    projs_odd    = projs_train[1::2]
+    angles_odd   = angles_train[1::2]
 
     init_pcd(
         projs=projs_train,

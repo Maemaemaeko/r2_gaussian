@@ -21,7 +21,7 @@ import yaml
 
 sys.path.append("./")
 from r2_gaussian.arguments import ModelParams, OptimizationParams, PipelineParams
-from r2_gaussian.gaussian import GaussianModel, render, query, initialize_gaussian, query_masked
+from r2_gaussian.gaussian import GaussianModel, render, query, initialize_gaussian, query_masked, render_with_mask
 from r2_gaussian.utils.general_utils import safe_state, t2a
 from r2_gaussian.utils.cfg_utils import load_config
 from r2_gaussian.utils.log_utils import prepare_output_and_logger
@@ -33,9 +33,7 @@ from r2_gaussian.utils.loss_utils import ecc_loss_for_pair, l1_loss, l2_loss, ss
 from r2_gaussian.utils.image_utils import metric_vol, metric_proj
 from r2_gaussian.utils.plot_utils import show_two_slice
 from r2_gaussian.utils.graphics_utils import fov2focal
-from r2_gaussian.utils.loss_utils import generate_random_RT_pairs_pm1deg
-
-
+from r2_gaussian.utils.loss_utils import generate_random_RT_pairs_pm1deg, generate_random_RT_pairs_translate_only, ray_entropy_loss_from_camera, tv_l1
 
 def training(
     dataset: ModelParams,
@@ -100,6 +98,9 @@ def training(
     progress_bar = tqdm(range(0, opt.iterations), desc="Train", leave=False)
     progress_bar.update(first_iter)
     first_iter += 1
+
+
+
     for iteration in range(first_iter, opt.iterations + 1):
         iter_start.record()
 
@@ -313,20 +314,85 @@ def training(
             loss["random_smoothness"] = random_smooth_loss.mean() * 0.1
             loss["total"] += loss["random_smoothness"]
 
-        random_sample_smoothness = True
+        random_sample_smoothness = False
+
         
         if random_sample_smoothness:
             import math
             import random
             import torch.nn.functional as F
+            import copy
+                        
+            xyz = gaussians.get_xyz 
+            #grad_mask = (xyz >= -0.5).all(dim=1) & (xyz <= 0.5).all(dim=1) 
+            def gaussian_blur2d(img: torch.Tensor, sigma: float = 1.5, ksize: int = 9):
+                """
+                img: (H,W) or (B,1,H,W) or (B,C,H,W)
+                return: same shape
+                """
+                if img.dim() == 2:
+                    img = img[None, None, ...]
+                elif img.dim() == 3:
+                    img = img[:, None, ...]  # (B,1,H,W)
+
+                B, C, H, W = img.shape
+                device = img.device
+                dtype = img.dtype
+
+                # 1D Gaussian kernel
+                x = torch.arange(ksize, device=device, dtype=dtype) - (ksize - 1) / 2
+                g = torch.exp(-(x**2) / (2 * sigma**2))
+                g = g / g.sum()
+
+                # separable conv: horizontal then vertical
+                g_x = g.view(1, 1, 1, ksize).repeat(C, 1, 1, 1)
+                g_y = g.view(1, 1, ksize, 1).repeat(C, 1, 1, 1)
+
+                pad = ksize // 2
+                out = F.conv2d(img, g_x, padding=(0, pad), groups=C)
+                out = F.conv2d(out, g_y, padding=(pad, 0), groups=C)
+                return out
+
+            def save_tensor_as_png(x: torch.Tensor, path: str, clamp_percentile: float = 0.0):
+                """
+                x: (H,W) or (1,H,W) or (B,H,W) - float tensor
+                保存前に0-255へ正規化（可視化用）
+                """
+                import imageio.v2 as imageio
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+
+                # 1枚だけにする
+                if x.dim() == 3:
+                    x = x[0]
+                x = x.detach().float().cpu()
+
+                # 可視化用に正規化（外れ値があると潰れるので任意でpercentileカット）
+                if clamp_percentile > 0.0:
+                    lo = torch.quantile(x, clamp_percentile)
+                    hi = torch.quantile(x, 1.0 - clamp_percentile)
+                    x = x.clamp(lo.item(), hi.item())
+
+                mn, mx = x.min(), x.max()
+                if (mx - mn) < 1e-8:
+                    img = torch.zeros_like(x)
+                else:
+                    img = (x - mn) / (mx - mn)
+
+                img_u8 = (img * 255.0).round().to(torch.uint8).numpy()
+                imageio.imwrite(path, img_u8)
+
+
+                        
             random_sample_smoothness_loss = 0
             R0, T0, R1, T1 = generate_random_RT_pairs_pm1deg(
-                n_poses=8,
+                iteration,
+                n_poses=3,
                 bbox_min=-5.0,
                 bbox_max= 5.0,
                 up=np.array([0., 0., 1.], dtype=np.float32),
                 seed=None,
             )
+            
             
             for i in range(len(R0)):
                 viewpoint_cam_0 = Camera(
@@ -342,6 +408,85 @@ def training(
                     image_name="none",
                     uid=1,
                 )
+                 
+
+                render_cam_0 = render(viewpoint_cam_0, gaussians, pipe)["render"]
+                #render_cam_0 = render_with_mask(viewpoint_cam_0, gaussians, pipe, grad_mask=grad_mask)["render"]
+                viewpoint_cam_1 = Camera(
+                    colmap_id=viewpoint_cam.colmap_id,
+                    scanner_cfg=None,
+                    R=R1[i],
+                    T=T1[i],
+                    angle=viewpoint_cam.angle,
+                    mode=viewpoint_cam.mode,
+                    FoVx=viewpoint_cam.FoVx,
+                    FoVy=viewpoint_cam.FoVy,
+                    image=torch.zeros((1, 512, 512)),
+                    image_name="none",
+                    uid=1,
+                )
+                render_cam_1 = render(viewpoint_cam_1, gaussians, pipe)["render"]
+                #render_cam_1 = render_with_mask(viewpoint_cam_1, gaussians, pipe, grad_mask=grad_mask)["render"]
+
+                H, W = 512, 512
+                i, j = H // 2, W // 2
+
+                blur_render_cam_0 = gaussian_blur2d(render_cam_0, sigma=1.5, ksize=9)
+                blur_render_cam_1 = gaussian_blur2d(render_cam_1, sigma=1.5, ksize=9)
+                blur_gt_image = gaussian_blur2d(gt_image, sigma=1.5, ksize=9)
+                hf_gt_image = gt_image - blur_gt_image
+
+                hf_cam_0 = render_cam_0 - blur_render_cam_0
+                hf_cam_1 = render_cam_1 - blur_render_cam_1
+                if iteration < 1000:
+                    random_sample_smoothness_loss += torch.abs(render_cam_0[..., :, :]  - render_cam_1[..., :, :]).mean()
+                else:
+                    random_sample_smoothness_loss += torch.abs(blur_render_cam_0[..., :, :]  - blur_render_cam_1[..., :, :]).mean()
+            
+                # if (iteration % 100) == 0:
+                #     out_dir = os.path.join(scene.model_path, "hf_smooth")
+                #     # save_tensor_as_png(gt_image[0],  os.path.join(out_dir, f"{iteration:06d}_gt.png"), clamp_percentile=0.01)
+                #     # save_tensor_as_png(blur_gt_image[0],  os.path.join(out_dir, f"{iteration:06d}_blur.png"), clamp_percentile=0.01)
+                #     # save_tensor_as_png(hf_gt_image[0], os.path.join(out_dir, f"{iteration:06d}_hf.png"), clamp_percentile=0.01)
+                #     save_tensor_as_png(render_cam_0[0],  os.path.join(out_dir, f"{iteration:06d}_render0.png"), clamp_percentile=0.01)
+                #     save_tensor_as_png(blur_render_cam_0[0],  os.path.join(out_dir, f"{iteration:06d}_blur0.png"), clamp_percentile=0.01)
+                #     save_tensor_as_png(hf_cam_0[0], os.path.join(out_dir, f"{iteration:06d}_hf0.png"), clamp_percentile=0.01)
+                
+
+
+            loss["random_sample_smoothness"] = random_sample_smoothness_loss * 0.1
+              
+            loss["total"] += loss["random_sample_smoothness"]
+
+
+
+        random_sample_smoothness_translate = False # なぜかangularのほうがうまくいく # gaussianの学習中に生じるノイズがtv lossでは、消すことができない
+        if random_sample_smoothness_translate:
+            # ===================================================
+
+            random_sample_smoothness_loss = 0
+            R0, T0, R1, T1 = generate_random_RT_pairs_translate_only(
+                n_poses=3,
+                bbox_min=-5.0,
+                bbox_max= 5.0,
+            )
+            
+            
+            for i in range(len(R0)):
+                viewpoint_cam_0 = Camera(
+                    colmap_id=viewpoint_cam.colmap_id,
+                    scanner_cfg=None,
+                    R=R0[i],
+                    T=T0[i],
+                    angle=viewpoint_cam.angle,
+                    mode=viewpoint_cam.mode,
+                    FoVx=viewpoint_cam.FoVx,
+                    FoVy=viewpoint_cam.FoVy,
+                    image=torch.zeros((1, 512, 512)),
+                    image_name="none",
+                    uid=1,
+                )
+
                 render_cam_0 = render(viewpoint_cam_0, gaussians, pipe)["render"]
                 viewpoint_cam_1 = Camera(
                     colmap_id=viewpoint_cam.colmap_id,
@@ -358,11 +503,14 @@ def training(
                 )
                 render_cam_1 = render(viewpoint_cam_1, gaussians, pipe)["render"]
 
-                random_sample_smoothness_loss += torch.mean(torch.abs(render_cam_0 - render_cam_1))
+                random_sample_smoothness_loss += torch.abs(render_cam_0 - render_cam_1)
 
-            # ===================================================
-            loss["random_sample_smoothness"] = random_sample_smoothness_loss.mean() * 0.1
+
+            #print(random_sample_smoothness_loss.mean())
+            loss["random_sample_smoothness"] = random_sample_smoothness_loss.mean() * 0.01
             loss["total"] += loss["random_sample_smoothness"]
+
+
 
 
         smoothness_dP_dtheta = False
@@ -443,7 +591,7 @@ def training(
         
         # localization loss
         # https://chatgpt.com/s/t_691ad54ee9008191926ae297404dd944
-        gaussian_localization = True
+        gaussian_localization = False
         # 細部の構造が失われないよう
         if gaussian_localization:
             xyz     = gaussians.get_xyz[:, :3]
@@ -673,7 +821,7 @@ def training(
             gaussians.max_radii2D[visibility_filter] = torch.max(
                 gaussians.max_radii2D[visibility_filter], radii[visibility_filter]
             )
-            #gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+            gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
             if iteration < opt.densify_until_iter:
                 if (
                     iteration > opt.densify_from_iter
@@ -893,8 +1041,8 @@ if __name__ == "__main__":
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
     parser.add_argument("--detect_anomaly", action="store_true", default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[1_000, 5_000, 10_000, 20_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[1_000, 5_000, 10_000, 20_000])
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[1, 1_000, 5_000, 10_000, 20_000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[1, 1_000, 5_000, 10_000, 20_000])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[5_000, 10_000, 20_000])
     parser.add_argument("--start_checkpoint", type=str, default=None)

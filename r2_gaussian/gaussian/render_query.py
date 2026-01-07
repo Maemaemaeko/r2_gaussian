@@ -168,12 +168,11 @@ def query_masked(
     keep_mask &= valid_mask
 
     # debug prints
-    print(keep_mask.shape)
     # filter ids/means using keep_mask
     means3D_ids = means3D_ids[keep_mask]
-    if means3D_ids.numel() > 0:
-        print(means3D_ids.max().cpu().item(), means3D_ids.min().cpu().item())
-    print(keep_mask.sum().cpu().item())
+    # if means3D_ids.numel() > 0:
+    #     print(means3D_ids.max().cpu().item(), means3D_ids.min().cpu().item())
+    # print(keep_mask.sum().cpu().item())
 
 
     means3D_f = means3D[keep_mask]
@@ -272,6 +271,115 @@ def render(
     )
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
+    return {
+        "render": rendered_image,
+        "viewspace_points": screenspace_points,
+        "visibility_filter": radii > 0,
+        "radii": radii,
+    }
+
+import math
+from typing import Optional
+import torch
+
+def _mask_detach_any(x: Optional[torch.Tensor], mask: torch.Tensor) -> Optional[torch.Tensor]:
+    """
+    x: (N, ...) tensor
+    mask: (N,) bool. Trueの行だけ勾配を流す。Falseは値は使うが勾配は止める。
+    """
+    if x is None:
+        return None
+    assert mask.dim() == 1 and x.shape[0] == mask.shape[0], (x.shape, mask.shape)
+
+    # (N, 1, 1, ...) に拡張してブロードキャスト
+    view_shape = [mask.shape[0]] + [1] * (x.dim() - 1)
+    m = mask.view(*view_shape)
+    return torch.where(m, x, x.detach())
+
+
+def render_with_mask(
+    viewpoint_camera: Camera,
+    pc: GaussianModel,
+    pipe: PipelineParams,
+    scaling_modifier=1.0,
+    grad_mask: Optional[torch.Tensor] = None,   # ★追加（Python3.9）
+):
+    """
+    Render an X-ray projection with rasterization.
+
+    grad_mask:
+      (N,) bool. TrueのGaussianだけ勾配を流す（False側は値は使うが勾配0）
+      Noneなら従来どおり全Gaussianに勾配が流れる。
+    """
+
+    screenspace_points = (
+        torch.zeros_like(
+            pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda"
+        )
+        + 0
+    )
+    try:
+        screenspace_points.retain_grad()
+    except Exception:
+        pass
+
+    mode = viewpoint_camera.mode
+    if mode == 0:
+        tanfovx = 1.0
+        tanfovy = 1.0
+    elif mode == 1:
+        tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
+        tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
+    else:
+        raise ValueError("Unsupported mode!")
+
+    raster_settings = GaussianRasterizationSettings(
+        image_height=int(viewpoint_camera.image_height),
+        image_width=int(viewpoint_camera.image_width),
+        tanfovx=tanfovx,
+        tanfovy=tanfovy,
+        scale_modifier=scaling_modifier,
+        viewmatrix=viewpoint_camera.world_view_transform,
+        projmatrix=viewpoint_camera.full_proj_transform,
+        campos=viewpoint_camera.camera_center,
+        prefiltered=False,
+        mode=viewpoint_camera.mode,
+        debug=pipe.debug,
+    )
+    rasterizer = GaussianRasterizer(raster_settings=raster_settings)
+
+    means3D = pc.get_xyz
+    means2D = screenspace_points
+    density = pc.get_density
+
+    scales = None
+    rotations = None
+    cov3D_precomp = None
+    if pipe.compute_cov3D_python:
+        cov3D_precomp = pc.get_covariance(scaling_modifier)
+    else:
+        scales = pc.get_scaling
+        rotations = pc.get_rotation
+
+    # ★ここが変更点：このrender呼び出しだけマスクで勾配制御
+    if grad_mask is not None:
+        # bool化＆device合わせ
+        grad_mask = grad_mask.to(device=means3D.device, dtype=torch.bool)
+        means3D = _mask_detach_any(means3D, grad_mask)
+        density = _mask_detach_any(density, grad_mask)
+        scales = _mask_detach_any(scales, grad_mask)
+        rotations = _mask_detach_any(rotations, grad_mask)
+        cov3D_precomp = _mask_detach_any(cov3D_precomp, grad_mask)
+
+    rendered_image, radii = rasterizer(
+        means3D=means3D,
+        means2D=means2D,
+        opacities=density,
+        scales=scales,
+        rotations=rotations,
+        cov3D_precomp=cov3D_precomp,
+    )
+
     return {
         "render": rendered_image,
         "viewspace_points": screenspace_points,
