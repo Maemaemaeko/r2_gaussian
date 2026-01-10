@@ -54,7 +54,7 @@ def main(args):
     if scanner_cfg["noise"]:
         projs_train = CTnoise.add(
             projs_train,
-            Poisson=scanner_cfg["possion_noise"],
+            Poisson=float(scanner_cfg["possion_noise"]),
             Gaussian=np.array(scanner_cfg["gaussian_noise"]),
         )  #
         projs_train[projs_train < 0.0] = 0.0

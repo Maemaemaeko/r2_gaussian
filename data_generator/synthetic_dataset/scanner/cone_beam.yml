@@ -42,7 +42,7 @@ startAngle: 0.0 # Start angle (degree)
 
 # Noise
 noise: true
-possion_noise: 10000  # lambda for possion
+possion_noise: 100000  # lambda for possion
 gaussian_noise: # mean and std for gaussian
 - 0 # mean
 - 10 # std
